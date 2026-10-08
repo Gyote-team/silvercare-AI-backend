@@ -12,7 +12,6 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout source repository
         uses: actions/checkout@v4
@@ -28,6 +27,14 @@ jobs:
           private-key: ${{ secrets.IEUM_SYNC_APP_PRIVATE_KEY }}
           owner: ieum-connect
           repositories: MediBridge_AI_backend
+
+      - name: Build filtered mirror
+        run: |
+          git switch --orphan mirror
+          git rm -rf --cached . || true
+          rm -rf .github/workflows README.md docs
+          git add -A
+          git -c user.name="ieum-sync" -c user.email="ieum-sync[bot]@users.noreply.github.com" commit -m "chore: 소스 코드 동기화"
 
       - name: Push to ieum-connect
         env:
