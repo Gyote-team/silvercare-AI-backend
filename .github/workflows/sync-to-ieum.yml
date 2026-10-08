@@ -29,6 +29,8 @@ jobs:
           repositories: MediBridge_AI_backend
 
       - name: Build filtered mirror
+        env:
+          SOURCE_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           mkdir -p ../mirror-source
           git archive HEAD | tar -x -C ../mirror-source
@@ -37,7 +39,7 @@ jobs:
           cp -R ../mirror-source/. .
           rm -rf .github/workflows README.md docs
           git add -A
-          git -c user.name="ieum-sync" -c user.email="ieum-sync[bot]@users.noreply.github.com" commit -m "chore(sync): 소스 코드 동기화"
+          git -c user.name="ieum-sync" -c user.email="ieum-sync[bot]@users.noreply.github.com" commit -m "$SOURCE_MESSAGE"
 
       - name: Push to ieum-connect
         env:
