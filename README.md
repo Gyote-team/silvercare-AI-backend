@@ -331,16 +331,7 @@ Python이 소유하는 PostgreSQL `ai` 스키마 migration을 관리합니다. �
 
 ## 팀 개발 규칙
 
-1. 브라우저가 Python API를 직접 호출하게 만들지 않습니다.
-2. API router에는 AI 처리 로직을 작성하지 않습니다.
-3. 외부 OCR/STT/LLM SDK는 `infrastructure/providers` 밖에서 import하지 않습니다.
-4. 모든 검색은 patient ID와 허용 source ID 필터를 사용합니다.
-5. AI 결과에는 가능하면 원문 page, bounding box 또는 건강기록 ID 근거를 남깁니다.
-6. 문서 삭제·동의 철회·연결 해제 요청을 받으면 관련 vector와 결과를 무효화합니다.
-7. 로그에 의료 원문, 음성 원문, API key, service token, signed URL을 남기지 않습니다.
-8. 새 기능은 domain 규칙, use case, pipeline, adapter의 책임을 구분해서 구현합니다.
-9. 기능 코드와 함께 unit test와 필요한 AI eval을 추가합니다.
-10. `develop`으로 직접 push하지 않고 pull request와 리뷰를 통해 병합합니다.
+팀 개발 규칙은 [docs/convention.md](docs/convention.md)를 따릅니다.
 
 ## 로컬 실행
 
@@ -379,7 +370,7 @@ Windows PowerShell 기준입니다. 저장소 루트에서 실행합니다.
    Copy-Item .env.example .env
    ```
 
-   `.env`를 열어 `AI_INTERNAL_TOKEN`과 `STORAGE_LOCAL_ROOT` 값을 채웁니다. `.env`는 커밋하지 않습니다.
+   `.env`를 열어 `AI_INTERNAL_TOKEN`과 `STORAGE_LOCAL_ROOT` 값을 채웁니다. `.env`는 커밋하지 않습니다. 현재 /health 확인에는 .env가 선택 사항이며, 설정을 사용하는 기능(DB 연결, 내부 토큰 확인 등)부터 필수입니다. 그때부터는 값이 비어 있으면 서버가 오류로 멈춥니다.
 
 5. 서버 실행
 
@@ -387,7 +378,7 @@ Windows PowerShell 기준입니다. 저장소 루트에서 실행합니다.
    python -m uvicorn app.main:app --reload --port 8000
    ```
 
-   <http://localhost:8000/health> 에서 `{"status": "ok"}`가 보이면 정상입니다.
+   <http://localhost:8000/health> 에서 `{"status": "ok"}`가 보이면 정상입니다. /health는 서버가 응답하는지만 확인하며, DB 연결이나 내부 토큰 설정을 검증하지 않습니다.
 
 6. 테스트와 린트
 
