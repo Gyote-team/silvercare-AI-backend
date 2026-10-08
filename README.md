@@ -341,3 +341,61 @@ Python이 소유하는 PostgreSQL `ai` 스키마 migration을 관리합니다. �
 8. 새 기능은 domain 규칙, use case, pipeline, adapter의 책임을 구분해서 구현합니다.
 9. 기능 코드와 함께 unit test와 필요한 AI eval을 추가합니다.
 10. `develop`으로 직접 push하지 않고 pull request와 리뷰를 통해 병합합니다.
+
+## 로컬 실행
+
+Windows PowerShell 기준입니다. 저장소 루트에서 실행합니다.
+
+1. Python 3.12 설치 확인
+
+   ```powershell
+   py -0
+   ```
+
+2. 가상환경 생성과 활성화
+
+   ```powershell
+   py -3.12 -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
+
+   스크립트 실행이 막히면 아래 명령을 한 번 실행한 뒤 다시 활성화합니다.
+
+   ```powershell
+   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+   ```
+
+3. 패키지 설치
+
+   Windows 앱 제어 정책이 .venv\Scripts의 pip.exe 같은 실행 파일을 막는 경우가 있어, 모든 명령을 python -m 형태로 실행합니다.
+
+   ```powershell
+   python -m pip install -e ".[dev]"
+   ```
+
+4. 환경 변수 설정
+
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+
+   `.env`를 열어 `AI_INTERNAL_TOKEN`과 `STORAGE_LOCAL_ROOT` 값을 채웁니다. `.env`는 커밋하지 않습니다.
+
+5. 서버 실행
+
+   ```powershell
+   python -m uvicorn app.main:app --reload --port 8000
+   ```
+
+   <http://localhost:8000/health> 에서 `{"status": "ok"}`가 보이면 정상입니다.
+
+6. 테스트와 린트
+
+   ```powershell
+   python -m pytest
+   python -m ruff check .
+   ```
+
+7. Spring과 연결
+
+   Spring `.env`에 `AI_BASE_URL=http://localhost:8000`을 설정합니다.
