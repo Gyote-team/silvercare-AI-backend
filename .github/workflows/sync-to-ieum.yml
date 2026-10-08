@@ -30,11 +30,14 @@ jobs:
 
       - name: Build filtered mirror
         run: |
+          mkdir -p ../mirror-source
+          git archive HEAD | tar -x -C ../mirror-source
           git switch --orphan mirror
-          git rm -rf --cached . || true
+          git rm -rf . || true
+          cp -R ../mirror-source/. .
           rm -rf .github/workflows README.md docs
           git add -A
-          git -c user.name="ieum-sync" -c user.email="ieum-sync[bot]@users.noreply.github.com" commit -m "chore: 소스 코드 동기화"
+          git -c user.name="ieum-sync" -c user.email="ieum-sync[bot]@users.noreply.github.com" commit -m "chore(sync): 소스 코드 동기화"
 
       - name: Push to ieum-connect
         env:
