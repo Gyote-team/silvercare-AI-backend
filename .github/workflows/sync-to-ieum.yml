@@ -28,7 +28,7 @@ jobs:
           repositories: MediBridge_AI_backend
       - name: Build filtered mirror
         run: |
-          SOURCE_MESSAGE="$(git log --no-merges -1 --format=%B HEAD)"
+          SOURCE_MESSAGE="$(git log --no-merges -1 --format=%B origin/develop)"
           mkdir -p ../mirror-source
           git archive HEAD | tar -x -C ../mirror-source
           git switch --orphan mirror
