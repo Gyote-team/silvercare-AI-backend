@@ -1,0 +1,36 @@
+name: Sync to ieum-connect
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: sync-medi-bridge-ai-backend
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.IEUM_SYNC_APP_ID }}
+          private-key: ${{ secrets.IEUM_SYNC_APP_PRIVATE_KEY }}
+          owner: ieum-connect
+          repositories: MediBridge_AI_backend
+
+      - name: Push to ieum-connect
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          git remote add destination "https://x-access-token:${TOKEN}@github.com/ieum-connect/MediBridge_AI_backend.git"
+          git push destination HEAD:main --force
