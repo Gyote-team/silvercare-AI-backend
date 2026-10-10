@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     database_url: str
     ai_internal_token: SecretStr = Field(min_length=1)
     storage_local_root: str = Field(min_length=1)
+    document_render_dpi: int = Field(default=150, gt=0)
+    document_max_pages: int = Field(default=30, gt=0)
 
 
 @lru_cache
