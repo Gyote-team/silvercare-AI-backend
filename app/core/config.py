@@ -1,6 +1,7 @@
 """환경 변수와 .env 파일에서 서버 설정을 읽는다."""
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +17,10 @@ class Settings(BaseSettings):
     storage_local_root: str = Field(min_length=1)
     document_render_dpi: int = Field(default=150, gt=0)
     document_max_pages: int = Field(default=30, gt=0)
+    openai_api_key: SecretStr | None = None
+    openai_vlm_model: str = Field(default="gpt-5.6-sol", min_length=1)
+    openai_vlm_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "high"
+    openai_vlm_timeout_seconds: float = Field(default=180, gt=0)
 
 
 @lru_cache
