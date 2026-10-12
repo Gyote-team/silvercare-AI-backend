@@ -109,3 +109,5 @@ Spring의 `ErrorCode` + `BusinessException` 구조를 따릅니다.
 python -m ruff check .
 python -m pytest
 ```
+
+ruff는 문법·스타일 오류, 사용하지 않는 import, import 순서, 오래된 문법, 흔한 버그 패턴(`E`, `F`, `I`, `UP`, `B`)만 검사합니다. 타입 힌트, 한국어 docstring, 계층 규칙(어느 폴더에서 무엇을 import하는지)은 자동으로 검사하지 않으므로 코드 리뷰에서 확인합니다.
