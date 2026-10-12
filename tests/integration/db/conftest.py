@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.infrastructure.db.session import get_engine
 
@@ -38,7 +38,11 @@ def document_id(db_session: Session) -> UUID:
     """FK를 채우려고 users, patients, visits, documents 행을 하나씩 만든다."""
     user_id, patient_id, visit_id, document_id = uuid4(), uuid4(), uuid4(), uuid4()
     db_session.execute(
-        text("INSERT INTO users (id, name, role) VALUES (:id, 'test', 'PATIENT')"),
+        # account_group_id는 NOT NULL이고 기본값이 없다. 자기 id를 넣는다.
+        text(
+            "INSERT INTO users (id, account_group_id, name, role)"
+            " VALUES (:id, :id, 'test', 'PATIENT')"
+        ),
         {"id": user_id},
     )
     db_session.execute(
@@ -68,3 +72,26 @@ def document_id(db_session: Session) -> UUID:
         },
     )
     return document_id
+
+
+@pytest.fixture
+def analysis_id(db_session: Session, document_id: UUID) -> UUID:
+    """Spring이 업로드할 때 만드는 PENDING 분석 작업 행을 하나 만든다."""
+    analysis_id = uuid4()
+    db_session.execute(
+        text(
+            "INSERT INTO document_analyses (id, document_id, parser_version)"
+            " VALUES (:id, :document_id, 'v1')"
+        ),
+        {"id": analysis_id, "document_id": document_id},
+    )
+    return analysis_id
+
+
+@pytest.fixture
+def session_factory(db_session: Session) -> sessionmaker[Session]:
+    """스스로 commit하는 저장소에 넘길 session factory.
+
+    테스트 연결에 묶여 있어 commit이 savepoint로만 끝나고, 테스트가 끝나면 함께 롤백된다.
+    """
+    return sessionmaker(bind=db_session.get_bind(), join_transaction_mode="create_savepoint")

@@ -69,6 +69,19 @@ def test_failed_page_does_not_stop_other_pages() -> None:
     ]
 
 
+def test_missing_api_key_stops_after_first_page() -> None:
+    """API 키가 없으면 첫 페이지 결과만 남기고 나머지 페이지는 부르지 않는다."""
+    error = PageExtractionError(PageExtractionErrorCode.MISSING_API_KEY)
+    extractor = FakeExtractor({1: error, 2: error, 3: error})
+
+    outcomes = extract_pages(extractor, PAGES)
+
+    assert extractor.requested_page_nos == [1]
+    assert outcomes == [
+        PageExtractionOutcome(page_no=1, error_code=PageExtractionErrorCode.MISSING_API_KEY)
+    ]
+
+
 def test_unexpected_error_propagates() -> None:
     """PageExtractionError가 아닌 예외는 삼키지 않고 그대로 올린다."""
     error = RuntimeError("bug")

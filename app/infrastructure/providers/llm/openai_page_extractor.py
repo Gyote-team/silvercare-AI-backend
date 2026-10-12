@@ -1,6 +1,6 @@
 """OpenAI Responses API로 페이지 PNG에서 추출 결과를 받는 VLM 포트 구현.
 
-openai SDK 없이 httpx로 직접 부른다. 재시도는 하지 않는다.
+openai SDK 없이 httpx로 직접 부른다. 재시도는 하지 않는다(RetryingPageExtractor가 감싸서 한다).
 """
 
 import base64
@@ -83,6 +83,10 @@ class OpenAIPageExtractor:
             extraction=_to_pixel_page(wire_page, page),
             usage=self._usage(body),
         )
+
+    def close(self) -> None:
+        """HTTP 연결을 닫는다. 추출기를 만든 쪽이 프로세스를 끝낼 때 한 번 부른다."""
+        self._client.close()
 
     def _request_body(self, page: PageImage) -> dict[str, Any]:
         image_base64 = base64.b64encode(page.png_bytes).decode("ascii")

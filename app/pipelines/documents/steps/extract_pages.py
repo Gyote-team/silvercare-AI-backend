@@ -24,7 +24,10 @@ class PageExtractionOutcome:
 def extract_pages(
     extractor: PageExtractor, pages: Sequence[PageImage]
 ) -> list[PageExtractionOutcome]:
-    """페이지 순서대로 VLM을 부른다. 실패한 페이지는 오류 코드로 남기고 다음 페이지를 계속한다."""
+    """페이지 순서대로 VLM을 부른다. 실패한 페이지는 오류 코드로 남기고 다음 페이지를 계속한다.
+
+    API 키가 없으면 그 페이지까지만 결과에 담고 나머지 페이지는 부르지 않는다.
+    """
     outcomes: list[PageExtractionOutcome] = []
     # 페이지를 하나씩 차례로 호출한다. 문서 한 건이 너무 느리면 스레드 풀로
     # 여러 페이지를 동시에 호출하도록 바꿀 수 있다.
@@ -33,6 +36,9 @@ def extract_pages(
             result = extractor.extract_page(page)
         except PageExtractionError as error:
             outcomes.append(PageExtractionOutcome(page_no=page.page_no, error_code=error.code))
+            # 키가 없으면 나머지 페이지도 똑같이 실패하므로 더 부르지 않는다.
+            if error.code is PageExtractionErrorCode.MISSING_API_KEY:
+                break
         else:
             outcomes.append(PageExtractionOutcome(page_no=page.page_no, result=result))
     return outcomes

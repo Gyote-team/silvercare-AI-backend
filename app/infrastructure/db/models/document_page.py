@@ -44,7 +44,7 @@ class DocumentPageModel(Base):
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
-    # documents 테이블은 매핑하지 않으므로 타입을 직접 적는다.
+    # FK 대상은 테이블 이름으로 적는다. documents 매핑은 DocumentModel에 있다.
     document_id: Mapped[UUID] = mapped_column(
         Uuid, ForeignKey("documents.id", name="document_pages_document_fk")
     )

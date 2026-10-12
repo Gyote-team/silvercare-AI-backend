@@ -263,6 +263,18 @@ def test_error_hides_key_and_source_text(status_code: int, body: dict[str, Any])
     assert error.value.__suppress_context__ or error.value.__context__ is None
 
 
+def test_close_closes_http_client() -> None:
+    """close 뒤에는 HTTP 호출을 하지 못한다."""
+    recorder = Recorder(body=text_body(make_output_text()))
+    extractor = make_extractor(recorder)
+
+    extractor.close()
+
+    with pytest.raises(RuntimeError):
+        extractor.extract_page(PAGE)
+    assert recorder.requests == []
+
+
 def test_build_from_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """설정 기본값과 v1 프롬프트로 만든다. 키가 없어도 만들어지고 호출할 때만 실패한다."""
     for name in SETTINGS_ENV_NAMES:

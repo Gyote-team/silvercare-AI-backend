@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     openai_vlm_model: str = Field(default="gpt-5.6-sol", min_length=1)
     openai_vlm_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "high"
     openai_vlm_timeout_seconds: float = Field(default=180, gt=0)
+    openai_vlm_max_retries: int = Field(default=2, ge=0)
+    openai_vlm_retry_backoff_seconds: float = Field(default=1.0, ge=0)
 
 
 @lru_cache
