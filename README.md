@@ -331,7 +331,7 @@ Python이 소유하는 PostgreSQL `ai` 스키마 migration을 관리합니다. �
 
 ## 팀 개발 규칙
 
-팀 개발 규칙은 [docs/convention.md](docs/convention.md)를 따릅니다.
+팀 개발 규칙과 Python 코드 작성 규약(이름, 주석, 오류 처리, 테스트)은 [docs/convention.md](docs/convention.md)를 따릅니다.
 
 ## 로컬 실행
 
