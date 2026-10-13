@@ -21,7 +21,7 @@ from app.infrastructure.db.repositories.document_analysis_repository import (
     SqlAlchemyDocumentAnalysisRepository,
 )
 from app.infrastructure.db.session import get_session_factory
-from app.infrastructure.providers.llm.openai_page_extractor import build_page_extractor
+from app.infrastructure.providers.llm.openai_page_extractor import create_page_extractor
 from app.infrastructure.storage.local_document_storage import LocalDocumentStorage
 
 
@@ -54,7 +54,7 @@ def main() -> None:
     document_id = pick_document_id(session_factory)
     storage = LocalDocumentStorage(settings.storage_local_root)
     repository = SqlAlchemyDocumentAnalysisRepository(session_factory)
-    inner = build_page_extractor(settings)
+    inner = create_page_extractor(settings)
     extractor = RetryingPageExtractor(
         inner,
         max_retries=settings.openai_vlm_max_retries,
@@ -73,6 +73,7 @@ def main() -> None:
                 extractor=extractor,
                 render_dpi=settings.document_render_dpi,
                 max_pages=settings.document_max_pages,
+                max_page_side_px=settings.document_max_page_side_px,
             )
         except Exception as error:
             # 예외 메시지에는 원문이나 경로가 들어 있을 수 있어 클래스 이름만 출력한다.

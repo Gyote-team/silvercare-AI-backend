@@ -19,7 +19,7 @@ from app.domain.document.page_extraction import DocumentType, ExtractedItemType,
 from app.domain.document.page_split import PageImage
 from app.infrastructure.providers.llm.openai_page_extractor import (
     OpenAIPageExtractor,
-    build_page_extractor,
+    create_page_extractor,
 )
 
 API_KEY = "sk-test-secret-value"
@@ -31,7 +31,9 @@ SETTINGS_ENV_NAMES = [
     "OPENAI_API_KEY",
     "OPENAI_VLM_MODEL",
     "OPENAI_VLM_REASONING_EFFORT",
+    "OPENAI_VLM_MAX_OUTPUT_TOKENS",
     "OPENAI_VLM_TIMEOUT_SECONDS",
+    "OPENAI_VLM_CONNECT_TIMEOUT_SECONDS",
 ]
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -104,7 +106,9 @@ def make_extractor(
         api_key=api_key,
         model="gpt-5.6-sol",
         reasoning_effort="high",
+        max_output_tokens=16000,
         timeout_seconds=5,
+        connect_timeout_seconds=1,
         prompt="PROMPT",
         prompt_version="v1",
         transport=httpx.MockTransport(handler),
@@ -294,7 +298,7 @@ def test_close_closes_http_client() -> None:
     assert recorder.requests == []
 
 
-def test_build_from_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_from_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """설정 기본값과 v2 프롬프트로 만든다. 키가 없어도 만들어지고 호출할 때만 실패한다."""
     for name in SETTINGS_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
@@ -304,7 +308,7 @@ def test_build_from_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     recorder = Recorder(body=text_body(make_output_text()))
 
     with pytest.raises(PageExtractionError) as error:
-        build_page_extractor(settings, httpx.MockTransport(recorder)).extract_page(PAGE)
+        create_page_extractor(settings, httpx.MockTransport(recorder)).extract_page(PAGE)
 
     assert error.value.code is PageExtractionErrorCode.MISSING_API_KEY
     assert (settings.openai_vlm_model, settings.openai_vlm_reasoning_effort) == (
@@ -312,10 +316,12 @@ def test_build_from_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         "high",
     )
     assert settings.openai_vlm_timeout_seconds == 180
+    assert settings.openai_vlm_connect_timeout_seconds == 10
+    assert settings.openai_vlm_max_output_tokens == 16000
 
 
-def test_build_uses_settings_and_prompt_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    """설정의 키·모델·추론 강도와 프롬프트 파일 내용을 요청에 쓴다."""
+def test_create_uses_settings_and_prompt_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """설정의 키·모델·추론 강도·출력 토큰 상한과 프롬프트 파일 내용을 요청에 쓴다."""
     for name in SETTINGS_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
     settings = Settings(
@@ -325,13 +331,15 @@ def test_build_uses_settings_and_prompt_file(monkeypatch: pytest.MonkeyPatch) ->
         storage_local_root="root",
         openai_api_key=API_KEY,
         openai_vlm_reasoning_effort="low",
+        openai_vlm_max_output_tokens=9000,
     )
     recorder = Recorder(body=text_body(make_output_text()))
 
-    result = build_page_extractor(settings, httpx.MockTransport(recorder)).extract_page(PAGE)
+    result = create_page_extractor(settings, httpx.MockTransport(recorder)).extract_page(PAGE)
 
     payload = json.loads(recorder.requests[0].content)
     assert recorder.requests[0].headers["Authorization"] == f"Bearer {API_KEY}"
     assert (payload["model"], payload["reasoning"]) == ("gpt-5.6-sol", {"effort": "low"})
+    assert payload["max_output_tokens"] == 9000
     assert payload["instructions"].startswith("# 의료 문서 페이지 추출 v2")
     assert result.usage.prompt_version == "v2"

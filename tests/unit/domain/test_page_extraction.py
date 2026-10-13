@@ -147,6 +147,11 @@ def test_blank_page_without_items_is_allowed(raw_text: str) -> None:
         ("주민등록번호 500101-1234567", "주민등록번호 500101-*******"),
         ("500101 - 1234567", "500101 - *******"),
         ("500101–1234567", "500101–*******"),
+        ("500101‐1234567", "500101‐*******"),
+        ("500101‑1234567", "500101‑*******"),
+        ("500101—1234567", "500101—*******"),
+        ("500101−1234567", "500101−*******"),
+        ("500101－1234567", "500101－*******"),
         ("5001011234567", "500101*******"),
         (
             "환자 500101-1234567\n보호자 550202-2345678",
@@ -155,7 +160,7 @@ def test_blank_page_without_items_is_allowed(raw_text: str) -> None:
     ],
 )
 def test_resident_number_back_digits_are_masked(text: str, expected: str) -> None:
-    """주민등록번호·외국인등록번호는 구분자 모양과 상관없이 뒤 7자리를 가린다."""
+    """주민등록번호·외국인등록번호는 구분자가 공백이든 어떤 하이픈·대시든 뒤 7자리를 가린다."""
     assert mask_resident_numbers(text) == expected
 
 
@@ -168,11 +173,28 @@ def test_resident_number_back_digits_are_masked(text: str, expected: str) -> Non
         "010-1234-5678",
         "등록번호 12345678",
         "홍길동 2026-11-03 혈색소 13.5 g/dL",
+        "500101~1234567",
+        "500101.1234567",
+        "500101 -- 1234567",
     ],
 )
 def test_other_text_is_not_masked(text: str) -> None:
-    """이미 가려진 번호, 더 긴 숫자, 전화번호, 이름, 날짜, 검사값은 그대로 둔다."""
+    """이미 가려진 번호, 더 긴 숫자, 전화번호, 이름, 날짜, 검사값은 그대로 둔다.
+
+    하이픈·대시가 아닌 구분자와 3글자를 넘는 구분자도 그대로 둔다.
+    """
     assert mask_resident_numbers(text) == text
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["normalized_name", "raw_value", "normalized_value", "unit", "reference_range", "source_text"],
+)
+def test_item_text_fields_hold_masked_resident_number(field: str) -> None:
+    """항목의 글자 필드는 모두 주민등록번호 뒷자리를 가린 값만 담는다."""
+    item = ExtractedItem.model_validate(make_item(**{field: "500101-1234567"}))
+
+    assert getattr(item, field) == "500101-*******"
 
 
 def test_page_holds_masked_raw_text() -> None:

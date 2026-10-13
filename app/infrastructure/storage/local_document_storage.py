@@ -7,6 +7,7 @@ from uuid import uuid4
 from app.application.ports.document_storage import (
     DocumentNotFoundError,
     InvalidObjectKeyError,
+    OriginalDocumentReadError,
     RenderedPageWriteError,
 )
 
@@ -25,7 +26,11 @@ class LocalDocumentStorage:
         target = self._resolve_inside_root(object_key)
         if not target.is_file():
             raise DocumentNotFoundError(object_key)
-        return target.read_bytes()
+        # OSError 메시지에는 전체 파일 경로가 들어 있으므로 from None으로 끊는다.
+        try:
+            return target.read_bytes()
+        except OSError:
+            raise OriginalDocumentReadError(object_key) from None
 
     def write_rendered_page(self, object_key: str, png_bytes: bytes) -> None:
         """루트 아래 objectKey에 PNG를 쓴다. 같은 키가 있으면 덮어쓴다."""

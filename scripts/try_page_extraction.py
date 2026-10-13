@@ -12,7 +12,7 @@ import pymupdf
 
 from app.application.ports.page_extractor import PageExtractionError
 from app.core.config import get_settings
-from app.infrastructure.providers.llm.openai_page_extractor import build_page_extractor
+from app.infrastructure.providers.llm.openai_page_extractor import create_page_extractor
 from app.pipelines.documents.page_splitter import split_pages
 
 _SYNTHETIC_LINES = [
@@ -44,8 +44,9 @@ def main() -> None:
         "application/pdf",
         render_dpi=settings.document_render_dpi,
         max_pages=settings.document_max_pages,
+        max_side_px=settings.document_max_page_side_px,
     )
-    extractor = build_page_extractor(settings)
+    extractor = create_page_extractor(settings)
 
     started = time.perf_counter()
     try:

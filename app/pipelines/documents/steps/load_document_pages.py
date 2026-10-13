@@ -12,7 +12,10 @@ def load_document_pages(
     *,
     render_dpi: int,
     max_pages: int,
+    max_side_px: int,
 ) -> list[PageImage]:
     """objectKey의 원본을 읽어 페이지별 PNG 목록으로 반환한다."""
     data = reader.read_original(object_key)
-    return split_pages(data, mime_type, render_dpi=render_dpi, max_pages=max_pages)
+    return split_pages(
+        data, mime_type, render_dpi=render_dpi, max_pages=max_pages, max_side_px=max_side_px
+    )

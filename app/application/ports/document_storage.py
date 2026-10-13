@@ -19,6 +19,14 @@ class InvalidObjectKeyError(Exception):
         self.object_key = object_key
 
 
+class OriginalDocumentReadError(Exception):
+    """원본 파일이 있지만 읽지 못했다. 메시지에는 objectKey만 담고 파일 경로는 담지 않는다."""
+
+    def __init__(self, object_key: str) -> None:
+        super().__init__(f"원본 파일을 읽지 못했습니다: {object_key}")
+        self.object_key = object_key
+
+
 class RenderedPageWriteError(Exception):
     """렌더링 이미지를 쓰지 못했다. 메시지에는 objectKey만 담고 파일 경로는 담지 않는다."""
 
@@ -31,7 +39,11 @@ class OriginalDocumentReader(Protocol):
     """objectKey로 원본 바이트를 읽는 인터페이스."""
 
     def read_original(self, object_key: str) -> bytes:
-        """원본 바이트를 반환한다. 실패하면 이 모듈의 두 예외 중 하나를 던진다."""
+        """원본 바이트를 반환한다.
+
+        실패하면 DocumentNotFoundError, InvalidObjectKeyError, OriginalDocumentReadError 중
+        하나를 던진다.
+        """
         ...
 
 

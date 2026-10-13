@@ -44,7 +44,9 @@ def test_reads_by_object_key_then_splits_pages() -> None:
     """포트에 objectKey를 그대로 넘기고, 읽은 바이트를 설정값대로 페이지로 나눈다."""
     reader = FakeReader(make_two_page_pdf())
 
-    pages = load_document_pages(reader, OBJECT_KEY, PDF, render_dpi=144, max_pages=2)
+    pages = load_document_pages(
+        reader, OBJECT_KEY, PDF, render_dpi=144, max_pages=2, max_side_px=2048
+    )
 
     assert reader.requested_keys == [OBJECT_KEY]
     assert [page.page_no for page in pages] == [1, 2]
@@ -54,7 +56,9 @@ def test_reads_by_object_key_then_splits_pages() -> None:
 def test_read_error_propagates() -> None:
     """포트의 읽기 예외는 바꾸지 않고 그대로 올린다."""
     with pytest.raises(DocumentNotFoundError):
-        load_document_pages(MissingReader(), OBJECT_KEY, PDF, render_dpi=72, max_pages=2)
+        load_document_pages(
+            MissingReader(), OBJECT_KEY, PDF, render_dpi=72, max_pages=2, max_side_px=2048
+        )
 
 
 def test_split_error_propagates() -> None:
@@ -62,7 +66,7 @@ def test_split_error_propagates() -> None:
     reader = FakeReader(b"not a pdf")
 
     with pytest.raises(PageSplitError) as error:
-        load_document_pages(reader, OBJECT_KEY, PDF, render_dpi=72, max_pages=2)
+        load_document_pages(reader, OBJECT_KEY, PDF, render_dpi=72, max_pages=2, max_side_px=2048)
 
     assert error.value.code is PageSplitErrorCode.CORRUPTED_FILE
 
@@ -72,6 +76,17 @@ def test_page_limit_is_passed_to_splitter() -> None:
     reader = FakeReader(make_two_page_pdf())
 
     with pytest.raises(PageSplitError) as error:
-        load_document_pages(reader, OBJECT_KEY, PDF, render_dpi=72, max_pages=1)
+        load_document_pages(reader, OBJECT_KEY, PDF, render_dpi=72, max_pages=1, max_side_px=2048)
 
     assert error.value.code is PageSplitErrorCode.PAGE_LIMIT_EXCEEDED
+
+
+def test_side_limit_is_passed_to_splitter() -> None:
+    """max_side_px가 분리기에 전달돼 긴 변이 그 크기로 줄어든다."""
+    reader = FakeReader(make_two_page_pdf())
+
+    pages = load_document_pages(
+        reader, OBJECT_KEY, PDF, render_dpi=144, max_pages=2, max_side_px=100
+    )
+
+    assert (pages[0].width_px, pages[0].height_px) == (50, 100)

@@ -14,7 +14,8 @@ from app.core.config import get_settings
 @lru_cache
 def get_engine() -> Engine:
     """engine을 한 번만 만들어 재사용한다. 실제 접속은 처음 쿼리할 때 일어난다."""
-    return create_engine(get_settings().database_url, pool_pre_ping=True)
+    # SQL 오류 메시지에 파라미터 값(문서 원문 등)이 붙지 않게 한다.
+    return create_engine(get_settings().database_url, pool_pre_ping=True, hide_parameters=True)
 
 
 @lru_cache

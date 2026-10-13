@@ -18,6 +18,7 @@ from app.application.ports.document_storage import (
     DocumentNotFoundError,
     InvalidObjectKeyError,
     OriginalDocumentReader,
+    OriginalDocumentReadError,
     RenderedPageWriteError,
     RenderedPageWriter,
 )
@@ -46,6 +47,7 @@ _UNEXPECTED_DETAIL_CODE = "UNEXPECTED_ERROR"
 _STORAGE_FAILURES: dict[type[Exception], tuple[str, bool]] = {
     DocumentNotFoundError: ("DOCUMENT_NOT_FOUND", True),
     InvalidObjectKeyError: ("INVALID_OBJECT_KEY", False),
+    OriginalDocumentReadError: ("ORIGINAL_READ_FAILED", True),
     RenderedPageWriteError: ("RENDERED_PAGE_WRITE_FAILED", True),
 }
 
@@ -119,6 +121,7 @@ def analyze_document(
     extractor: PageExtractor,
     render_dpi: int,
     max_pages: int,
+    max_page_side_px: int,
 ) -> DocumentAnalysisResult:
     """문서 하나를 분석하고 결과와 상태를 기록한다.
 
@@ -140,6 +143,7 @@ def analyze_document(
                 target.mime_type,
                 render_dpi=render_dpi,
                 max_pages=max_pages,
+                max_side_px=max_page_side_px,
             )
             save_rendered_pages(writer, page_repository, document_id, pages)
         except (PageSplitError, *_STORAGE_FAILURES) as error:

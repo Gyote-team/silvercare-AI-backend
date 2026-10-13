@@ -9,9 +9,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 NORMALIZED_BOX_MAX = 1000
 
 # 주민등록번호·외국인등록번호: 앞 6자리, 구분자(없을 수도 있음), 뒤 7자리.
+# 구분자는 공백과 하이픈·대시류(- ‐ ‑ – — − －)를 합쳐 3글자까지다.
 # 개인정보가 남지 않는 쪽으로 넓게 잡아, 같은 모양의 다른 숫자(하이픈 없는 13자리 등)도 가린다.
 # 두 줄 이상으로 갈라진 번호나 모델이 잘못 읽은 번호는 잡지 못한다.
-_RESIDENT_NUMBER = re.compile(r"(?<!\d)(\d{6})(\s?[-–]?\s?)\d{7}(?!\d)")
+_RESIDENT_NUMBER = re.compile(
+    r"(?<!\d)(\d{6})([\s\-‐‑–—−－]{0,3})\d{7}(?!\d)"
+)
 _MASKED_BACK_DIGITS = "*" * 7
 
 
@@ -86,7 +89,10 @@ class NormalizedBox(_StrictModel):
 
 
 class ExtractedItem(_StrictModel):
-    """문서에서 옮겨 적은 항목 하나. 기본값이 없어 null이어도 키는 모두 있어야 한다."""
+    """문서에서 옮겨 적은 항목 하나. 기본값이 없어 null이어도 키는 모두 있어야 한다.
+
+    글자 필드는 주민등록번호 뒷자리를 가린 값만 담는다.
+    """
 
     item_type: ExtractedItemType
     normalized_name: str | None = Field(max_length=200)
@@ -97,6 +103,18 @@ class ExtractedItem(_StrictModel):
     confidence: float | None = Field(ge=0, le=1)
     source_text: str
     source_box: SourceBox | None
+
+    @field_validator(
+        "normalized_name",
+        "raw_value",
+        "normalized_value",
+        "unit",
+        "reference_range",
+        "source_text",
+    )
+    @classmethod
+    def _mask_text(cls, value: str | None) -> str | None:
+        return None if value is None else mask_resident_numbers(value)
 
     @field_validator("source_text")
     @classmethod

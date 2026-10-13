@@ -8,6 +8,7 @@ import pytest
 from app.application.ports.document_storage import (
     DocumentNotFoundError,
     InvalidObjectKeyError,
+    OriginalDocumentReadError,
     RenderedPageWriteError,
 )
 from app.infrastructure.storage.local_document_storage import LocalDocumentStorage
@@ -73,6 +74,25 @@ def test_error_message_has_key_but_no_root_path(
 
     assert object_key in str(error.value)
     assert str(root) not in str(error.value)
+
+
+def test_unreadable_file_raises_read_error_and_hides_path(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """파일이 있는데 읽지 못하면 OriginalDocumentReadError이고, 예외에 루트 경로가 없다."""
+    object_key = "documents/1/original.pdf"
+
+    def fail_read(path: Path) -> bytes:
+        raise PermissionError(f"cannot read {path}")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read)
+
+    with pytest.raises(OriginalDocumentReadError) as error:
+        LocalDocumentStorage(str(root)).read_original(object_key)
+
+    assert object_key in str(error.value)
+    assert str(root) not in str(error.value)
+    assert error.value.__cause__ is None
 
 
 def test_writes_rendered_page(root: Path) -> None:

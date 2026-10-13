@@ -25,11 +25,8 @@ PROMPT_FEATURE = "document_extraction"
 PROMPT_VERSION = "v2"
 
 _RESPONSES_URL = "https://api.openai.com/v1/responses"
-_CONNECT_TIMEOUT_SECONDS = 10.0
 # high는 2048x2048 안, 2500 패치까지 원래 크기를 유지한다. 150DPI A4는 축소되지 않는다.
 _IMAGE_DETAIL = "high"
-# 추론 토큰을 포함한 출력 상한. 한 번의 호출 비용이 끝없이 커지지 않게 막는다.
-_MAX_OUTPUT_TOKENS = 16000
 _SCHEMA_NAME = "page_extraction"
 
 
@@ -57,7 +54,9 @@ class OpenAIPageExtractor:
         api_key: SecretStr | None,
         model: str,
         reasoning_effort: str,
+        max_output_tokens: int,
         timeout_seconds: float,
+        connect_timeout_seconds: float,
         prompt: str,
         prompt_version: str,
         transport: httpx.BaseTransport | None = None,
@@ -65,10 +64,11 @@ class OpenAIPageExtractor:
         self._api_key = api_key
         self._model = model
         self._reasoning_effort = reasoning_effort
+        self._max_output_tokens = max_output_tokens
         self._prompt = prompt
         self._prompt_version = prompt_version
         self._client = httpx.Client(
-            timeout=httpx.Timeout(timeout_seconds, connect=_CONNECT_TIMEOUT_SECONDS),
+            timeout=httpx.Timeout(timeout_seconds, connect=connect_timeout_seconds),
             transport=transport,
         )
 
@@ -94,7 +94,8 @@ class OpenAIPageExtractor:
             "model": self._model,
             "instructions": self._prompt,
             "reasoning": {"effort": self._reasoning_effort},
-            "max_output_tokens": _MAX_OUTPUT_TOKENS,
+            # 추론 토큰을 포함한 출력 상한. 한 번의 호출 비용이 끝없이 커지지 않게 막는다.
+            "max_output_tokens": self._max_output_tokens,
             # 의료 문서이므로 OpenAI 쪽에 응답을 저장하지 않게 한다.
             "store": False,
             "input": [
@@ -194,7 +195,7 @@ def _to_pixel_page(wire_page: _WirePage, page: PageImage) -> PageExtraction:
     )
 
 
-def build_page_extractor(
+def create_page_extractor(
     settings: Settings, transport: httpx.BaseTransport | None = None
 ) -> OpenAIPageExtractor:
     """설정과 프롬프트 파일로 추출기를 만든다. 이때는 API 키가 없어도 된다."""
@@ -202,7 +203,9 @@ def build_page_extractor(
         api_key=settings.openai_api_key,
         model=settings.openai_vlm_model,
         reasoning_effort=settings.openai_vlm_reasoning_effort,
+        max_output_tokens=settings.openai_vlm_max_output_tokens,
         timeout_seconds=settings.openai_vlm_timeout_seconds,
+        connect_timeout_seconds=settings.openai_vlm_connect_timeout_seconds,
         prompt=load_prompt(PROMPT_FEATURE, PROMPT_VERSION),
         prompt_version=PROMPT_VERSION,
         transport=transport,

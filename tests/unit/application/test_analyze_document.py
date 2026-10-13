@@ -12,6 +12,7 @@ from app.application.ports.document_analysis_repository import AnalysisTarget
 from app.application.ports.document_storage import (
     DocumentNotFoundError,
     InvalidObjectKeyError,
+    OriginalDocumentReadError,
     RenderedPageWriteError,
 )
 from app.application.ports.page_extractor import (
@@ -216,6 +217,7 @@ def run(
         extractor=extractor or FakeExtractor(),
         render_dpi=72,
         max_pages=5,
+        max_page_side_px=2048,
     )
 
 
@@ -355,6 +357,7 @@ def test_every_extraction_error_code_is_mapped() -> None:
     [
         (DocumentNotFoundError(OBJECT_KEY), "DOCUMENT_NOT_FOUND", True),
         (InvalidObjectKeyError(OBJECT_KEY), "INVALID_OBJECT_KEY", False),
+        (OriginalDocumentReadError(OBJECT_KEY), "ORIGINAL_READ_FAILED", True),
     ],
 )
 def test_original_read_failure_marks_failed(

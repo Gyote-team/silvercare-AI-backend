@@ -31,9 +31,15 @@ def make_pdf(**save_options: object) -> bytes:
     return document.tobytes(**save_options)
 
 
-def make_image(image_format: str, *, mode: str = "RGB", orientation: int | None = None) -> bytes:
-    """가로 40, 세로 20 이미지를 만든다. orientation을 주면 EXIF 회전 값을 넣는다."""
-    image = Image.new(mode, (40, 20))
+def make_image(
+    image_format: str,
+    *,
+    mode: str = "RGB",
+    orientation: int | None = None,
+    size: tuple[int, int] = (40, 20),
+) -> bytes:
+    """기본 가로 40, 세로 20 이미지를 만든다. orientation을 주면 EXIF 회전 값을 넣는다."""
+    image = Image.new(mode, size)
     options = {}
     if orientation is not None:
         exif = image.getexif()
@@ -52,10 +58,24 @@ def make_broken_chunk_png() -> bytes:
 
 
 def split(
-    data: bytes, mime_type: str, *, render_dpi: int = 72, max_pages: int = 30
+    data: bytes,
+    mime_type: str,
+    *,
+    render_dpi: int = 72,
+    max_pages: int = 30,
+    max_side_px: int = 2048,
 ) -> list[PageImage]:
-    """테스트 기본값(72 DPI, 최대 30페이지)으로 split_pages를 부른다."""
-    return split_pages(data, mime_type, render_dpi=render_dpi, max_pages=max_pages)
+    """테스트 기본값(72 DPI, 최대 30페이지, 긴 변 2048px)으로 split_pages를 부른다."""
+    return split_pages(
+        data, mime_type, render_dpi=render_dpi, max_pages=max_pages, max_side_px=max_side_px
+    )
+
+
+def assert_png_size(page: PageImage, size: tuple[int, int]) -> None:
+    """기록한 크기와 PNG의 실제 크기가 모두 주어진 크기인지 확인한다."""
+    assert (page.width_px, page.height_px) == size
+    with Image.open(BytesIO(page.png_bytes)) as image:
+        assert image.size == size
 
 
 def assert_split_fails(
@@ -84,6 +104,43 @@ def test_pdf_render_dpi_scales_page_size() -> None:
     pages = split(make_pdf(), PDF, render_dpi=144)
 
     assert (pages[0].width_px, pages[0].height_px) == (600, 800)
+
+
+@pytest.mark.parametrize(
+    ("page_size", "expected"),
+    [((4032, 3024), (2048, 1536)), ((3024, 4032), (1536, 2048)), ((14400, 14400), (2048, 2048))],
+)
+def test_large_pdf_page_is_rendered_within_side_limit(
+    page_size: tuple[int, int], expected: tuple[int, int]
+) -> None:
+    """큰 PDF 페이지는 긴 변이 상한에 맞게, 비율을 유지한 채 렌더링된다."""
+    document = pymupdf.open()
+    document.new_page(width=page_size[0], height=page_size[1])
+
+    pages = split(document.tobytes(), PDF, render_dpi=150)
+
+    assert_png_size(pages[0], expected)
+
+
+@pytest.mark.parametrize(("mime_type", "image_format"), [(PNG, "PNG"), (JPEG, "JPEG")])
+def test_large_image_is_shrunk_within_side_limit(mime_type: str, image_format: str) -> None:
+    """큰 이미지는 긴 변이 상한에 맞게, 비율을 유지한 채 줄어든다."""
+    pages = split(make_image(image_format, size=(5000, 3000)), mime_type)
+
+    assert_png_size(pages[0], (2048, 1229))
+
+
+def test_large_rotated_image_is_shrunk_after_rotation() -> None:
+    """EXIF 회전이 있는 큰 이미지는 돌린 뒤의 긴 변이 상한에 맞는다."""
+    pages = split(make_image("JPEG", orientation=6, size=(5000, 3000)), JPEG)
+
+    assert_png_size(pages[0], (1229, 2048))
+
+
+def test_side_limit_comes_from_argument() -> None:
+    """상한은 인자로 받은 값을 쓰고, 상한보다 작은 입력은 키우지 않는다."""
+    assert_png_size(split(make_image("PNG"), PNG, max_side_px=10)[0], (10, 5))
+    assert_png_size(split(make_image("PNG"), PNG, max_side_px=4096)[0], (40, 20))
 
 
 @pytest.mark.parametrize(("mime_type", "image_format"), [(PNG, "PNG"), (JPEG, "JPEG")])
