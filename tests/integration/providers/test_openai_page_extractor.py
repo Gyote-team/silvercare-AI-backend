@@ -25,6 +25,7 @@ from app.infrastructure.providers.llm.openai_page_extractor import (
 API_KEY = "sk-test-secret-value"
 SECRET_API_KEY = SecretStr(API_KEY)
 SOURCE_TEXT = "혈색소 13.5 g/dL"
+RAW_TEXT = "합성 검사 결과지\n혈색소 13.5 g/dL"
 PAGE = PageImage(page_no=1, png_bytes=b"fake-png-bytes", width_px=1240, height_px=1754)
 SETTINGS_ENV_NAMES = [
     "OPENAI_API_KEY",
@@ -36,8 +37,11 @@ SETTINGS_ENV_NAMES = [
 Handler = Callable[[httpx.Request], httpx.Response]
 
 
-def make_output_text(**item_overrides: Any) -> str:
-    """합성 검사값 항목 하나가 든 모델 출력 JSON 문자열을 만든다. 박스는 0~1000 좌표다."""
+def make_output_text(*, raw_text: str | None = RAW_TEXT, **item_overrides: Any) -> str:
+    """합성 검사값 항목 하나가 든 모델 출력 JSON 문자열을 만든다. 박스는 0~1000 좌표다.
+
+    raw_text가 None이면 raw_text 키를 뺀다.
+    """
     item: dict[str, Any] = {
         "item_type": "LAB_VALUE",
         "normalized_name": "혈색소",
@@ -49,7 +53,9 @@ def make_output_text(**item_overrides: Any) -> str:
         "source_text": SOURCE_TEXT,
         "source_box": {"x": 100, "y": 200, "width": 500, "height": 100},
     }
-    page = {"document_type": "LAB_RESULT", "items": [{**item, **item_overrides}]}
+    page: dict[str, Any] = {"document_type": "LAB_RESULT", "items": [{**item, **item_overrides}]}
+    if raw_text is not None:
+        page["raw_text"] = raw_text
     return json.dumps(page, ensure_ascii=False)
 
 
@@ -134,17 +140,18 @@ def test_sends_image_prompt_and_strict_schema() -> None:
         "data:image/png;base64," + base64.b64encode(b"fake-png-bytes").decode("ascii")
     )
     assert (output_format["type"], output_format["strict"]) == ("json_schema", True)
-    assert set(output_format["schema"]["properties"]) == {"document_type", "items"}
+    assert set(output_format["schema"]["properties"]) == {"document_type", "raw_text", "items"}
 
 
 def test_returns_extraction_with_pixel_box_and_usage() -> None:
-    """정상 응답은 추출 결과로 읽고, 박스는 픽셀로 바꾸고, 사용량과 모델 이름을 돌려준다."""
+    """정상 응답은 원문과 항목으로 읽고, 박스는 픽셀로 바꾸고, 사용량과 모델 이름을 돌려준다."""
     recorder = Recorder(body=text_body(make_output_text()))
 
     result = make_extractor(recorder).extract_page(PAGE)
 
     item = result.extraction.items[0]
     assert result.extraction.document_type is DocumentType.LAB_RESULT
+    assert result.extraction.raw_text == RAW_TEXT
     assert (item.item_type, item.source_text) == (ExtractedItemType.LAB_VALUE, SOURCE_TEXT)
     assert item.source_box == SourceBox(x=124, y=350, width=620, height=176)
     assert result.usage == VlmUsage(
@@ -167,19 +174,30 @@ def test_box_outside_page_is_dropped_but_item_is_kept() -> None:
     assert result.extraction.items[0].source_text == SOURCE_TEXT
 
 
+def test_resident_number_in_raw_text_is_masked() -> None:
+    """응답 원문에 주민등록번호가 있어도 결과에는 뒷자리가 가려져 있다."""
+    recorder = Recorder(body=text_body(make_output_text(raw_text="홍길동 500101-1234567")))
+
+    result = make_extractor(recorder).extract_page(PAGE)
+
+    assert result.extraction.raw_text == "홍길동 500101-*******"
+
+
 @pytest.mark.parametrize(
     "body",
     [
         text_body("not json"),
         text_body(make_output_text(source_text="")),
         text_body(make_output_text(item_type="SURGERY")),
+        text_body(make_output_text(raw_text=None)),
+        text_body(make_output_text(raw_text="  ")),
         text_body(make_output_text(), output=[]),
         {"status": "completed"},
         ["not", "an", "object"],
     ],
 )
 def test_schema_mismatch(body: Any) -> None:
-    """JSON이 아니거나 출력 형식과 다르거나 출력이 없으면 SCHEMA_MISMATCH다."""
+    """형식과 다른 출력(원문 없이 항목만 있는 경우 포함)이나 빈 출력은 SCHEMA_MISMATCH다."""
     assert extract_error_code(Recorder(body=body)) is PageExtractionErrorCode.SCHEMA_MISMATCH
 
 
@@ -259,6 +277,7 @@ def test_error_hides_key_and_source_text(status_code: int, body: dict[str, Any])
     assert str(error.value) == error.value.code.value
     assert API_KEY not in repr(error.value)
     assert SOURCE_TEXT not in repr(error.value)
+    assert RAW_TEXT not in repr(error.value)
     assert error.value.__cause__ is None
     assert error.value.__suppress_context__ or error.value.__context__ is None
 
@@ -276,7 +295,7 @@ def test_close_closes_http_client() -> None:
 
 
 def test_build_from_default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """설정 기본값과 v1 프롬프트로 만든다. 키가 없어도 만들어지고 호출할 때만 실패한다."""
+    """설정 기본값과 v2 프롬프트로 만든다. 키가 없어도 만들어지고 호출할 때만 실패한다."""
     for name in SETTINGS_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
     settings = Settings(
@@ -314,5 +333,5 @@ def test_build_uses_settings_and_prompt_file(monkeypatch: pytest.MonkeyPatch) ->
     payload = json.loads(recorder.requests[0].content)
     assert recorder.requests[0].headers["Authorization"] == f"Bearer {API_KEY}"
     assert (payload["model"], payload["reasoning"]) == ("gpt-5.6-sol", {"effort": "low"})
-    assert payload["instructions"].startswith("# 의료 문서 페이지 추출 v1")
-    assert result.usage.prompt_version == "v1"
+    assert payload["instructions"].startswith("# 의료 문서 페이지 추출 v2")
+    assert result.usage.prompt_version == "v2"

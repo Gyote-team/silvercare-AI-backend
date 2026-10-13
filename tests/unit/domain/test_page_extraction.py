@@ -12,7 +12,10 @@ from app.domain.document.page_extraction import (
     NormalizedBox,
     PageExtraction,
     SourceBox,
+    mask_resident_numbers,
 )
+
+RAW_TEXT = "혈색소 13.5 g/dL\n다음 진료 2026-11-03"
 
 
 def make_item(**overrides: Any) -> dict[str, Any]:
@@ -31,18 +34,30 @@ def make_item(**overrides: Any) -> dict[str, Any]:
     return {**item, **overrides}
 
 
+def make_page(**overrides: Any) -> dict[str, Any]:
+    """합성 항목 하나가 든 페이지 결과를 dict로 만든다. 넘긴 값으로 필드를 바꾼다."""
+    page: dict[str, Any] = {
+        "document_type": "LAB_RESULT",
+        "raw_text": RAW_TEXT,
+        "items": [make_item()],
+    }
+    return {**page, **overrides}
+
+
 def test_parses_valid_page() -> None:
-    """올바른 결과는 Enum과 중첩 모델로 읽힌다."""
-    page = PageExtraction.model_validate({"document_type": "LAB_RESULT", "items": [make_item()]})
+    """올바른 결과는 Enum과 중첩 모델로 읽히고 원문을 그대로 담는다."""
+    page = PageExtraction.model_validate(make_page())
 
     assert page.document_type is DocumentType.LAB_RESULT
+    assert page.raw_text == RAW_TEXT
+    assert page.has_text is True
     assert page.items[0].item_type is ExtractedItemType.LAB_VALUE
     assert page.items[0].source_box == SourceBox(x=10, y=20, width=300, height=40)
 
 
 def test_empty_items_is_allowed() -> None:
     """옮길 항목이 없는 페이지는 빈 목록으로 받는다."""
-    page = PageExtraction.model_validate({"document_type": "UNKNOWN", "items": []})
+    page = PageExtraction.model_validate(make_page(document_type="UNKNOWN", items=[]))
 
     assert page.items == []
 
@@ -99,7 +114,72 @@ def test_missing_key_is_rejected(missing_key: str) -> None:
 def test_unknown_document_type_is_rejected() -> None:
     """documents.document_type에 없는 문서 종류는 거절한다."""
     with pytest.raises(ValidationError):
-        PageExtraction.model_validate({"document_type": "RECEIPT", "items": []})
+        PageExtraction.model_validate(make_page(document_type="RECEIPT", items=[]))
+
+
+def test_missing_raw_text_is_rejected() -> None:
+    """raw_text 키가 없으면 거절한다."""
+    page = make_page()
+    del page["raw_text"]
+
+    with pytest.raises(ValidationError):
+        PageExtraction.model_validate(page)
+
+
+@pytest.mark.parametrize("raw_text", ["", "   ", "\n"])
+def test_blank_raw_text_with_items_is_rejected(raw_text: str) -> None:
+    """원문이 비었는데 항목이 있으면 앞뒤가 맞지 않으므로 거절한다."""
+    with pytest.raises(ValidationError):
+        PageExtraction.model_validate(make_page(raw_text=raw_text))
+
+
+@pytest.mark.parametrize("raw_text", ["", "   ", "\n"])
+def test_blank_page_without_items_is_allowed(raw_text: str) -> None:
+    """원문도 항목도 없는 빈 페이지는 받고, 글자가 없다고 알려 준다."""
+    page = PageExtraction.model_validate(make_page(raw_text=raw_text, items=[]))
+
+    assert page.has_text is False
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("주민등록번호 500101-1234567", "주민등록번호 500101-*******"),
+        ("500101 - 1234567", "500101 - *******"),
+        ("500101–1234567", "500101–*******"),
+        ("5001011234567", "500101*******"),
+        (
+            "환자 500101-1234567\n보호자 550202-2345678",
+            "환자 500101-*******\n보호자 550202-*******",
+        ),
+    ],
+)
+def test_resident_number_back_digits_are_masked(text: str, expected: str) -> None:
+    """주민등록번호·외국인등록번호는 구분자 모양과 상관없이 뒤 7자리를 가린다."""
+    assert mask_resident_numbers(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "500101-1******",
+        "500101-*******",
+        "12345678901234",
+        "010-1234-5678",
+        "등록번호 12345678",
+        "홍길동 2026-11-03 혈색소 13.5 g/dL",
+    ],
+)
+def test_other_text_is_not_masked(text: str) -> None:
+    """이미 가려진 번호, 더 긴 숫자, 전화번호, 이름, 날짜, 검사값은 그대로 둔다."""
+    assert mask_resident_numbers(text) == text
+
+
+def test_page_holds_masked_raw_text() -> None:
+    """페이지 결과는 주민등록번호 뒷자리를 가린 원문만 담고, 이름은 그대로 둔다."""
+    page = PageExtraction.model_validate(make_page(raw_text="홍길동 500101-1234567"))
+
+    assert page.raw_text == "홍길동 500101-*******"
 
 
 def test_json_schema_meets_strict_output_rules() -> None:

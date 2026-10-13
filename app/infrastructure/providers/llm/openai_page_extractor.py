@@ -22,7 +22,7 @@ from app.domain.document.page_split import PageImage
 from app.infrastructure.providers.llm.prompt_loader import load_prompt
 
 PROMPT_FEATURE = "document_extraction"
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 _RESPONSES_URL = "https://api.openai.com/v1/responses"
 _CONNECT_TIMEOUT_SECONDS = 10.0
@@ -189,7 +189,9 @@ def _to_pixel_page(wire_page: _WirePage, page: PageImage) -> PageExtraction:
         )
         for item in wire_page.items
     ]
-    return PageExtraction(document_type=wire_page.document_type, items=items)
+    return PageExtraction(
+        document_type=wire_page.document_type, raw_text=wire_page.raw_text, items=items
+    )
 
 
 def build_page_extractor(

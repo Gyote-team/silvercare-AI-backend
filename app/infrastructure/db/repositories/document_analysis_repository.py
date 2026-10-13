@@ -1,4 +1,4 @@
-"""분석 상태와 추출 결과를 documents, document_analyses, extracted_items에 쓰는 SQLAlchemy 구현."""
+"""분석 상태와 추출 결과를 documents, document_analyses, document_pages, extracted_items에 쓴다."""
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -13,8 +13,8 @@ from app.domain.document.document_analysis import (
     AnalysisStatus,
     DocumentStatus,
 )
-from app.domain.document.document_page import RenderedPage
-from app.domain.document.page_extraction import ExtractedItem
+from app.domain.document.document_page import PageOcrStatus, RenderedPage
+from app.domain.document.page_extraction import PageExtraction
 from app.infrastructure.db.models.document import DocumentModel
 from app.infrastructure.db.models.document_analysis import DocumentAnalysisModel
 from app.infrastructure.db.models.document_page import DocumentPageModel
@@ -96,11 +96,11 @@ class SqlAlchemyDocumentAnalysisRepository:
         self,
         target: AnalysisTarget,
         document_status: DocumentStatus,
-        items_by_page_no: Mapping[int, Sequence[ExtractedItem]],
+        extractions_by_page_no: Mapping[int, PageExtraction],
         model_version: str | None,
         completed_at: datetime,
     ) -> bool:
-        """추출 항목 교체, 분석 SUCCEEDED, 문서 상태 변경을 한 트랜잭션으로 묶는다."""
+        """추출 항목 교체, 페이지 원문 기록, 분석과 문서 상태 변경을 한 트랜잭션으로 묶는다."""
         with self._session_factory.begin() as session:
             if not _update_document(session, target, document_status, completed_at):
                 return False
@@ -119,11 +119,25 @@ class SqlAlchemyDocumentAnalysisRepository:
                     "analysis_id": target.analysis_id,
                     "page_id": page_ids[page_no],
                 }
-                for page_no, items in items_by_page_no.items()
-                for item in items
+                for page_no, extraction in extractions_by_page_no.items()
+                for item in extraction.items
             ]
             if rows:
                 session.execute(insert(ExtractedItemModel), rows)
+            # 모든 페이지를 실패로 둔 뒤 성공한 페이지만 덮어쓴다.
+            _mark_pages_failed(session, target)
+            page_rows = [
+                {
+                    "id": page_ids[page_no],
+                    "ocr_status": (
+                        PageOcrStatus.SUCCEEDED if extraction.has_text else PageOcrStatus.SKIPPED
+                    ),
+                    "ocr_text": extraction.raw_text if extraction.has_text else None,
+                }
+                for page_no, extraction in extractions_by_page_no.items()
+            ]
+            if page_rows:
+                session.execute(update(DocumentPageModel), page_rows)
             _update_analysis(
                 session,
                 target,
@@ -136,11 +150,12 @@ class SqlAlchemyDocumentAnalysisRepository:
     def mark_failed(
         self, target: AnalysisTarget, failure: AnalysisFailure, completed_at: datetime
     ) -> bool:
-        """추출 항목 삭제, 실패 기록, 문서와 분석 FAILED를 한 트랜잭션으로 묶는다."""
+        """추출 항목 삭제, 페이지 FAILED, 실패 기록, 문서와 분석 FAILED를 한 트랜잭션으로 묶는다."""
         with self._session_factory.begin() as session:
             if not _update_document(session, target, DocumentStatus.FAILED, completed_at):
                 return False
             _delete_items(session, target)
+            _mark_pages_failed(session, target)
             _update_analysis(
                 session,
                 target,
@@ -178,4 +193,13 @@ def _delete_items(session: Session, target: AnalysisTarget) -> None:
     # 유일 키가 없어 upsert를 쓸 수 없으므로, 다시 실행해도 쌓이지 않게 지우고 넣는다.
     session.execute(
         delete(ExtractedItemModel).where(ExtractedItemModel.analysis_id == target.analysis_id)
+    )
+
+
+def _mark_pages_failed(session: Session, target: AnalysisTarget) -> None:
+    # 이전 실행의 원문이 실패한 페이지에 남지 않게 ocr_text도 비운다.
+    session.execute(
+        update(DocumentPageModel)
+        .where(DocumentPageModel.document_id == target.document_id)
+        .values(ocr_status=PageOcrStatus.FAILED, ocr_text=None)
     )

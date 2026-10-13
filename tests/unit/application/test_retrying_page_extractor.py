@@ -16,7 +16,7 @@ from app.domain.document.page_split import PageImage
 
 PAGE = PageImage(page_no=1, png_bytes=b"page1", width_px=100, height_px=200)
 RESULT = PageExtractionResult(
-    extraction=PageExtraction(document_type=DocumentType.UNKNOWN, items=[]),
+    extraction=PageExtraction(document_type=DocumentType.UNKNOWN, raw_text="", items=[]),
     usage=VlmUsage(
         model_name="fake-model",
         prompt_version="v1",

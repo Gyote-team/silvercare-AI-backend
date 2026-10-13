@@ -1,13 +1,13 @@
 """문서 분석의 대상 조회, 상태 기록, 추출 결과 저장 포트를 정의한다."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
 from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
-from app.domain.document.page_extraction import ExtractedItem
+from app.domain.document.page_extraction import PageExtraction
 
 
 @dataclass(frozen=True)
@@ -38,15 +38,22 @@ class DocumentAnalysisRepository(Protocol):
         self,
         target: AnalysisTarget,
         document_status: DocumentStatus,
-        items_by_page_no: Mapping[int, Sequence[ExtractedItem]],
+        extractions_by_page_no: Mapping[int, PageExtraction],
         model_version: str | None,
         completed_at: datetime,
     ) -> bool:
-        """이 분석의 추출 항목을 새 항목으로 바꾸고, 분석을 SUCCEEDED, 문서를 받은 상태로 바꾼다."""
+        """이 분석의 추출 항목을 새 항목으로 바꾸고, 분석을 SUCCEEDED, 문서를 받은 상태로 바꾼다.
+
+        extractions_by_page_no에는 추출에 성공한 페이지만 담는다. 그 페이지는 원문과 함께
+        SUCCEEDED(글자가 없으면 원문 없이 SKIPPED)로, 나머지 페이지는 원문 없이 FAILED로 기록한다.
+        """
         ...
 
     def mark_failed(
         self, target: AnalysisTarget, failure: AnalysisFailure, completed_at: datetime
     ) -> bool:
-        """이 분석의 추출 항목을 지우고, 문서와 분석을 FAILED로 바꾸고 실패 기록을 남긴다."""
+        """이 분석의 추출 항목을 지우고, 문서와 분석을 FAILED로 바꾸고 실패 기록을 남긴다.
+
+        문서의 모든 페이지도 원문 없이 FAILED로 바꾼다.
+        """
         ...

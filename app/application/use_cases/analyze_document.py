@@ -200,7 +200,7 @@ def _record_outcomes(
     saved = repository.save_result(
         target,
         status,
-        {page_no: result.extraction.items for page_no, result in succeeded.items()},
+        {page_no: result.extraction for page_no, result in succeeded.items()},
         usages[0].model_name,
         datetime.now(UTC),
     )

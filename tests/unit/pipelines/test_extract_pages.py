@@ -18,7 +18,7 @@ PAGES = [
     PageImage(page_no=3, png_bytes=b"page3", width_px=100, height_px=200),
 ]
 RESULT = PageExtractionResult(
-    extraction=PageExtraction(document_type=DocumentType.UNKNOWN, items=[]),
+    extraction=PageExtraction(document_type=DocumentType.UNKNOWN, raw_text="", items=[]),
     usage=VlmUsage(
         model_name="fake-model",
         prompt_version="v1",

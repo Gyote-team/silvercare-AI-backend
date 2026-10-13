@@ -1,6 +1,6 @@
 """문서 분석 유스케이스 단위 테스트. 저장소, 스토리지, VLM 포트는 가짜로 대신한다."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -63,9 +63,10 @@ USAGE = VlmUsage(
     output_tokens=5,
     reasoning_tokens=2,
 )
-RESULT = PageExtractionResult(
-    extraction=PageExtraction(document_type=DocumentType.UNKNOWN, items=[ITEM]), usage=USAGE
-)
+EXTRACTION = PageExtraction(document_type=DocumentType.UNKNOWN, raw_text="합성 문장", items=[ITEM])
+RESULT = PageExtractionResult(extraction=EXTRACTION, usage=USAGE)
+BLANK_EXTRACTION = PageExtraction(document_type=DocumentType.UNKNOWN, raw_text="", items=[])
+BLANK_RESULT = PageExtractionResult(extraction=BLANK_EXTRACTION, usage=USAGE)
 # VLM 오류 코드 → (error_code, failed_step, retryable) 기대값.
 EXTRACTION_MAPPING = [
     ("MISSING_API_KEY", "AI_GENERATION_FAILED", "VLM_EXTRACTION", False),
@@ -118,10 +119,18 @@ class FakeWriter:
 
 
 class FakeExtractor:
-    """받은 페이지 번호를 기록하는 가짜 포트. 정해 둔 페이지에서는 정해 둔 예외를 던진다."""
+    """받은 페이지 번호를 기록하는 가짜 포트.
 
-    def __init__(self, errors: Mapping[int, Exception] | None = None) -> None:
+    정해 둔 페이지에서는 정해 둔 예외를 던지거나 글자가 없는 빈 결과를 돌려준다.
+    """
+
+    def __init__(
+        self,
+        errors: Mapping[int, Exception] | None = None,
+        blank_page_nos: Collection[int] = (),
+    ) -> None:
         self.errors = errors or {}
+        self.blank_page_nos = blank_page_nos
         self.requested_page_nos: list[int] = []
 
     def extract_page(self, page: PageImage) -> PageExtractionResult:
@@ -129,7 +138,7 @@ class FakeExtractor:
         self.requested_page_nos.append(page.page_no)
         if page.page_no in self.errors:
             raise self.errors[page.page_no]
-        return RESULT
+        return BLANK_RESULT if page.page_no in self.blank_page_nos else RESULT
 
 
 class FakeRepository:
@@ -166,12 +175,14 @@ class FakeRepository:
         self,
         target: AnalysisTarget,
         document_status: DocumentStatus,
-        items_by_page_no: Mapping[int, Sequence[ExtractedItem]],
+        extractions_by_page_no: Mapping[int, PageExtraction],
         model_version: str | None,
         completed_at: datetime,
     ) -> bool:
-        """받은 상태, 페이지별 항목, 모델 이름을 기록한다."""
-        self.calls.append(("save_result", document_status, dict(items_by_page_no), model_version))
+        """받은 상태, 페이지별 추출 결과, 모델 이름을 기록한다."""
+        self.calls.append(
+            ("save_result", document_status, dict(extractions_by_page_no), model_version)
+        )
         return True
 
     def mark_failed(
@@ -230,7 +241,7 @@ def test_all_pages_succeed_marks_ready() -> None:
     assert repository.calls[-1] == (
         "save_result",
         DocumentStatus.READY,
-        {1: [ITEM], 2: [ITEM], 3: [ITEM]},
+        {1: EXTRACTION, 2: EXTRACTION, 3: EXTRACTION},
         "fake-model",
     )
     assert result == DocumentAnalysisResult(
@@ -249,12 +260,27 @@ def test_some_pages_fail_marks_needs_review() -> None:
     assert repository.calls[-1] == (
         "save_result",
         DocumentStatus.NEEDS_REVIEW,
-        {1: [ITEM], 3: [ITEM]},
+        {1: EXTRACTION, 3: EXTRACTION},
         "fake-model",
     )
     assert result == DocumentAnalysisResult(
         document_status=DocumentStatus.NEEDS_REVIEW, usages=(USAGE, USAGE)
     )
+
+
+def test_blank_page_counts_as_success() -> None:
+    """글자가 없는 페이지는 실패로 세지 않아 READY이고, 빈 결과를 그대로 저장소에 넘긴다."""
+    repository = FakeRepository()
+
+    result = run(repository, extractor=FakeExtractor(blank_page_nos={2}))
+
+    assert repository.calls[-1] == (
+        "save_result",
+        DocumentStatus.READY,
+        {1: EXTRACTION, 2: BLANK_EXTRACTION, 3: EXTRACTION},
+        "fake-model",
+    )
+    assert result.document_status is DocumentStatus.READY
 
 
 def test_all_pages_fail_marks_failed_with_first_failure() -> None:

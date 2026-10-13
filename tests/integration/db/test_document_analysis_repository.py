@@ -17,8 +17,14 @@ from app.domain.document.document_analysis import (
     DocumentStatus,
     FailedStep,
 )
-from app.domain.document.document_page import RenderedPage, rendered_page_key
-from app.domain.document.page_extraction import ExtractedItem, ExtractedItemType, SourceBox
+from app.domain.document.document_page import PageOcrStatus, RenderedPage, rendered_page_key
+from app.domain.document.page_extraction import (
+    DocumentType,
+    ExtractedItem,
+    ExtractedItemType,
+    PageExtraction,
+    SourceBox,
+)
 from app.infrastructure.db.repositories.document_analysis_repository import (
     SqlAlchemyDocumentAnalysisRepository,
 )
@@ -32,6 +38,8 @@ FAILURE = AnalysisFailure(
     retryable=True,
     detail_code="TIMEOUT",
 )
+BLANK_PAGE = PageExtraction(document_type=DocumentType.UNKNOWN, raw_text="", items=[])
+UNTOUCHED_PAGES = [(1, PageOcrStatus.PENDING, None), (2, PageOcrStatus.PENDING, None)]
 
 
 def make_item(source_text: str, source_box: SourceBox | None = BOX) -> ExtractedItem:
@@ -46,6 +54,13 @@ def make_item(source_text: str, source_box: SourceBox | None = BOX) -> Extracted
         confidence=0.9,
         source_text=source_text,
         source_box=source_box,
+    )
+
+
+def make_extraction(*items: ExtractedItem, raw_text: str = "합성 원문") -> PageExtraction:
+    """받은 항목과 원문이 든 페이지 추출 결과를 만든다."""
+    return PageExtraction(
+        document_type=DocumentType.LAB_RESULT, raw_text=raw_text, items=list(items)
     )
 
 
@@ -81,6 +96,18 @@ def fetch_items(session: Session, analysis_id: UUID) -> Sequence[Row]:
         ),
         {"id": analysis_id},
     ).all()
+
+
+def fetch_pages(session: Session, document_id: UUID) -> list[tuple[int, str, str | None]]:
+    """문서의 페이지별 (page_no, ocr_status, ocr_text)를 페이지 번호 순서로 읽는다."""
+    rows = session.execute(
+        text(
+            "SELECT page_no, ocr_status, ocr_text FROM document_pages"
+            " WHERE document_id = :id ORDER BY page_no"
+        ),
+        {"id": document_id},
+    ).all()
+    return [tuple(row) for row in rows]
 
 
 @pytest.fixture
@@ -157,7 +184,7 @@ def test_deleted_document_is_not_found_and_not_changed(
     target: AnalysisTarget,
     delete_sql: str,
 ) -> None:
-    """삭제된 문서는 대상으로 찾지 않고, 상태를 바꾸는 메서드도 아무것도 바꾸지 않는다."""
+    """삭제된 문서는 대상으로 찾지 않고, 상태를 바꾸는 메서드도 문서·분석·페이지를 바꾸지 않는다."""
     db_session.execute(text(delete_sql), {"id": target.document_id})
     before = fetch_document(db_session, target.document_id)
 
@@ -165,7 +192,11 @@ def test_deleted_document_is_not_found_and_not_changed(
     assert repository.mark_started(target, STARTED_AT) is False
     assert (
         repository.save_result(
-            target, DocumentStatus.READY, {1: [make_item("a")]}, "fake-model", COMPLETED_AT
+            target,
+            DocumentStatus.READY,
+            {1: make_extraction(make_item("a"))},
+            "fake-model",
+            COMPLETED_AT,
         )
         is False
     )
@@ -174,6 +205,7 @@ def test_deleted_document_is_not_found_and_not_changed(
     assert fetch_document(db_session, target.document_id) == before
     assert fetch_analysis(db_session, target.analysis_id).status == AnalysisStatus.PENDING
     assert fetch_items(db_session, target.analysis_id) == []
+    assert fetch_pages(db_session, target.document_id) == UNTOUCHED_PAGES
 
 
 def test_mark_started_sets_processing_and_running(
@@ -197,12 +229,16 @@ def test_save_result_stores_items_and_final_status(
     target: AnalysisTarget,
     document_status: DocumentStatus,
 ) -> None:
-    """항목을 페이지에 연결해 저장하고, 분석은 SUCCEEDED, 문서는 받은 상태가 된다."""
+    """항목과 페이지 원문을 저장하고, 분석은 SUCCEEDED, 문서는 받은 상태가 된다."""
     repository.mark_started(target, STARTED_AT)
-    items = {1: [make_item("a"), make_item("b", source_box=None)], 2: [make_item("c")]}
+    extractions = {
+        1: make_extraction(make_item("a"), make_item("b", source_box=None), raw_text="1쪽 원문"),
+        2: make_extraction(make_item("c"), raw_text="2쪽 원문"),
+    }
 
     assert (
-        repository.save_result(target, document_status, items, "fake-model", COMPLETED_AT) is True
+        repository.save_result(target, document_status, extractions, "fake-model", COMPLETED_AT)
+        is True
     )
 
     rows = fetch_items(db_session, target.analysis_id)
@@ -217,14 +253,70 @@ def test_save_result_stores_items_and_final_status(
     assert (analysis.status, analysis.completed_at) == (AnalysisStatus.SUCCEEDED, COMPLETED_AT)
     assert analysis.model_version == "fake-model"
     assert (analysis.error_code, analysis.failed_step, analysis.error_message) == (None, None, None)
+    assert fetch_pages(db_session, target.document_id) == [
+        (1, PageOcrStatus.SUCCEEDED, "1쪽 원문"),
+        (2, PageOcrStatus.SUCCEEDED, "2쪽 원문"),
+    ]
+
+
+def test_page_missing_from_result_is_failed_without_text(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
+) -> None:
+    """결과에 없는(추출에 실패한) 페이지는 FAILED이고 원문이 없다."""
+    extractions = {1: make_extraction(make_item("a"), raw_text="1쪽 원문")}
+
+    repository.save_result(
+        target, DocumentStatus.NEEDS_REVIEW, extractions, "fake-model", COMPLETED_AT
+    )
+
+    assert fetch_pages(db_session, target.document_id) == [
+        (1, PageOcrStatus.SUCCEEDED, "1쪽 원문"),
+        (2, PageOcrStatus.FAILED, None),
+    ]
+
+
+def test_blank_page_is_skipped_without_text(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
+) -> None:
+    """글자가 없는 페이지는 SKIPPED이고 원문은 빈 문자열이 아니라 NULL이다."""
+    extractions = {1: make_extraction(make_item("a"), raw_text="1쪽 원문"), 2: BLANK_PAGE}
+
+    repository.save_result(target, DocumentStatus.READY, extractions, "fake-model", COMPLETED_AT)
+
+    assert fetch_pages(db_session, target.document_id) == [
+        (1, PageOcrStatus.SUCCEEDED, "1쪽 원문"),
+        (2, PageOcrStatus.SKIPPED, None),
+    ]
+
+
+def test_rerun_overwrites_page_text_and_status(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
+) -> None:
+    """다시 저장하면 원문은 새 값으로 바뀌고, 이번에 실패한 페이지는 예전 원문이 지워진다."""
+    first = {
+        1: make_extraction(make_item("a"), raw_text="처음 1쪽"),
+        2: make_extraction(make_item("b"), raw_text="처음 2쪽"),
+    }
+    second = {1: make_extraction(make_item("c"), raw_text="다시 1쪽")}
+    repository.save_result(target, DocumentStatus.READY, first, "fake-model", COMPLETED_AT)
+
+    repository.save_result(target, DocumentStatus.NEEDS_REVIEW, second, "fake-model", COMPLETED_AT)
+
+    assert fetch_pages(db_session, target.document_id) == [
+        (1, PageOcrStatus.SUCCEEDED, "다시 1쪽"),
+        (2, PageOcrStatus.FAILED, None),
+    ]
 
 
 def test_rerun_replaces_items_without_duplicates(
     db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
 ) -> None:
     """같은 분석을 다시 저장하면 예전 항목은 사라지고 새 항목만 남는다."""
-    first = {1: [make_item("a"), make_item("b")], 2: [make_item("c")]}
-    second = {1: [make_item("d")], 2: [make_item("e")]}
+    first = {
+        1: make_extraction(make_item("a"), make_item("b")),
+        2: make_extraction(make_item("c")),
+    }
+    second = {1: make_extraction(make_item("d")), 2: make_extraction(make_item("e"))}
     repository.save_result(target, DocumentStatus.READY, first, "fake-model", COMPLETED_AT)
 
     repository.save_result(target, DocumentStatus.READY, second, "fake-model", COMPLETED_AT)
@@ -236,9 +328,13 @@ def test_rerun_replaces_items_without_duplicates(
 def test_mark_failed_records_failure_and_removes_items(
     db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
 ) -> None:
-    """실패하면 문서와 분석이 FAILED가 되고 실패 기록이 남으며, 예전 항목은 지워진다."""
+    """실패하면 문서·분석·페이지가 FAILED가 되고 실패 기록이 남으며, 예전 항목과 원문은 지워진다."""
     repository.save_result(
-        target, DocumentStatus.READY, {1: [make_item("a")]}, "fake-model", COMPLETED_AT
+        target,
+        DocumentStatus.READY,
+        {1: make_extraction(make_item("a")), 2: make_extraction(make_item("b"))},
+        "fake-model",
+        COMPLETED_AT,
     )
 
     assert repository.mark_failed(target, FAILURE, COMPLETED_AT) is True
@@ -250,6 +346,10 @@ def test_mark_failed_records_failure_and_removes_items(
     assert (analysis.error_code, analysis.failed_step) == ("VLM_TIMEOUT", "VLM_EXTRACTION")
     assert (analysis.error_message, analysis.retryable) == ("TIMEOUT", True)
     assert fetch_items(db_session, target.analysis_id) == []
+    assert fetch_pages(db_session, target.document_id) == [
+        (1, PageOcrStatus.FAILED, None),
+        (2, PageOcrStatus.FAILED, None),
+    ]
 
 
 def test_mark_started_clears_previous_failure(
