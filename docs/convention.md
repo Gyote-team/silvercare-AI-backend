@@ -70,7 +70,7 @@ class PageSplitError(Exception):
 
 
 def split_pages(
-    data: bytes, mime_type: str, *, render_dpi: int, max_pages: int
+    data: bytes, mime_type: str, *, render_dpi: int, max_pages: int, max_side_px: int
 ) -> list[PageImage]:
     """원본 바이트를 페이지별 PNG로 나눈다. 실패하면 PageSplitError를 던진다."""
 ```
