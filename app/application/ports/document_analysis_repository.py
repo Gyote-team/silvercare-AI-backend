@@ -31,7 +31,11 @@ class DocumentAnalysisRepository(Protocol):
         ...
 
     def mark_started(self, target: AnalysisTarget, started_at: datetime) -> bool:
-        """문서를 PROCESSING, 분석을 RUNNING으로 바꾸고 이전 실패 기록을 지운다."""
+        """문서를 PROCESSING, 분석을 RUNNING으로 바꾸고 이전 실패 기록을 지운다.
+
+        분석이 이미 SUCCEEDED면 아무것도 바꾸지 않고 False를 반환한다. 재분석은 같은 행이 아니라
+        새 분석 행으로 한다(시트 FC-08-03-02, 재시도 API가 새 행을 만든다).
+        """
         ...
 
     def save_result(
@@ -54,6 +58,6 @@ class DocumentAnalysisRepository(Protocol):
     ) -> bool:
         """이 분석의 추출 항목을 지우고, 문서와 분석을 FAILED로 바꾸고 실패 기록을 남긴다.
 
-        문서의 모든 페이지도 원문 없이 FAILED로 바꾼다.
+        문서의 모든 페이지도 원문 없이 FAILED로 바꾼다. 설명이 참조해 지울 수 없는 항목은 남긴다.
         """
         ...

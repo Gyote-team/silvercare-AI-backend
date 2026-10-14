@@ -1,10 +1,12 @@
 """분석 상태와 추출 결과를 documents, document_analyses, document_pages, extracted_items에 쓴다."""
 
+import logging
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, insert, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.application.ports.document_analysis_repository import AnalysisTarget
@@ -22,6 +24,8 @@ from app.infrastructure.db.models.extracted_item import ExtractedItemModel
 from app.infrastructure.db.repositories.document_page_repository import (
     SqlAlchemyDocumentPageRepository,
 )
+
+logger = logging.getLogger(__name__)
 
 _NOT_DELETED = (
     DocumentModel.status != DocumentStatus.DELETED,
@@ -65,8 +69,19 @@ class SqlAlchemyDocumentAnalysisRepository:
         )
 
     def mark_started(self, target: AnalysisTarget, started_at: datetime) -> bool:
-        """문서를 PROCESSING, 분석을 RUNNING으로 바꾸고 이전 실행의 결과 컬럼을 비운다."""
+        """문서를 PROCESSING, 분석을 RUNNING으로 바꾸고 이전 실행의 결과 컬럼을 비운다.
+
+        분석이 이미 SUCCEEDED면 아무것도 바꾸지 않고 False를 반환한다.
+        """
         with self._session_factory.begin() as session:
+            status = session.execute(
+                select(DocumentAnalysisModel.status)
+                .where(DocumentAnalysisModel.id == target.analysis_id)
+                .with_for_update()
+            ).scalar_one()
+            # 끝난 분석은 다시 돌리지 않는다. 재분석은 새 분석 행으로 한다(FC-08-03-02).
+            if status == AnalysisStatus.SUCCEEDED:
+                return False
             if not _update_document(session, target, DocumentStatus.PROCESSING, started_at):
                 return False
             _update_analysis(
@@ -150,11 +165,24 @@ class SqlAlchemyDocumentAnalysisRepository:
     def mark_failed(
         self, target: AnalysisTarget, failure: AnalysisFailure, completed_at: datetime
     ) -> bool:
-        """추출 항목 삭제, 페이지 FAILED, 실패 기록, 문서와 분석 FAILED를 한 트랜잭션으로 묶는다."""
+        """추출 항목 삭제, 페이지 FAILED, 실패 기록, 문서와 분석 FAILED를 한 트랜잭션으로 묶는다.
+
+        설명이 참조해 항목을 지울 수 없으면 항목은 남기고 나머지만 기록한다.
+        """
         with self._session_factory.begin() as session:
             if not _update_document(session, target, DocumentStatus.FAILED, completed_at):
                 return False
-            _delete_items(session, target)
+            try:
+                with session.begin_nested():
+                    _delete_items(session, target)
+            except IntegrityError as error:
+                # 삭제만 되돌리고 실패 기록은 남겨야 PROCESSING/RUNNING에 멈추지 않는다.
+                logger.warning(
+                    "추출 항목을 지우지 못해 남겨 둡니다: document_id=%s, analysis_id=%s, error=%s",
+                    target.document_id,
+                    target.analysis_id,
+                    type(error).__name__,
+                )
             _mark_pages_failed(session, target)
             _update_analysis(
                 session,

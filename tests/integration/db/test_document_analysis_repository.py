@@ -352,6 +352,60 @@ def test_mark_failed_records_failure_and_removes_items(
     ]
 
 
+def test_succeeded_analysis_is_not_restarted(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
+) -> None:
+    """이미 SUCCEEDED인 분석은 다시 시작하지 않고 문서·분석·항목·페이지를 그대로 둔다."""
+    repository.save_result(
+        target,
+        DocumentStatus.READY,
+        {1: make_extraction(make_item("a"), raw_text="1쪽 원문")},
+        "fake-model",
+        COMPLETED_AT,
+    )
+    before = (
+        fetch_document(db_session, target.document_id),
+        fetch_analysis(db_session, target.analysis_id),
+        fetch_items(db_session, target.analysis_id),
+        fetch_pages(db_session, target.document_id),
+    )
+
+    assert repository.mark_started(target, STARTED_AT) is False
+
+    assert (
+        fetch_document(db_session, target.document_id),
+        fetch_analysis(db_session, target.analysis_id),
+        fetch_items(db_session, target.analysis_id),
+        fetch_pages(db_session, target.document_id),
+    ) == before
+
+
+def test_mark_failed_keeps_items_referenced_by_explanation(
+    db_session: Session,
+    repository: SqlAlchemyDocumentAnalysisRepository,
+    target: AnalysisTarget,
+    explained_item_id: UUID,
+) -> None:
+    """설명이 참조하는 항목이 있어도 실패를 기록하고, 그 항목은 지우지 않고 남긴다."""
+    repository.mark_started(target, STARTED_AT)
+
+    assert repository.mark_failed(target, FAILURE, COMPLETED_AT) is True
+
+    document = fetch_document(db_session, target.document_id)
+    analysis = fetch_analysis(db_session, target.analysis_id)
+    assert document.status == DocumentStatus.FAILED
+    assert (analysis.status, analysis.error_code) == (AnalysisStatus.FAILED, "VLM_TIMEOUT")
+    assert fetch_pages(db_session, target.document_id) == [
+        (1, PageOcrStatus.FAILED, None),
+        (2, PageOcrStatus.FAILED, None),
+    ]
+    remaining = db_session.scalars(
+        text("SELECT id FROM extracted_items WHERE analysis_id = :id"),
+        {"id": target.analysis_id},
+    ).all()
+    assert remaining == [explained_item_id]
+
+
 def test_mark_started_clears_previous_failure(
     db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
 ) -> None:

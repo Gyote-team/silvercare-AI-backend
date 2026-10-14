@@ -2,6 +2,7 @@
 
 자동 테스트에 포함되지 않는다. 실행할 때마다 OpenAI 비용이 들고 DB 상태가 바뀐다.
 저장소 루트에서 실행한다. documentId를 주지 않으면 삭제되지 않은 가장 최근 문서를 고른다.
+document_status가 '변경 없음'이면 문서가 없거나 삭제됐거나, 최신 분석이 이미 SUCCEEDED인 경우다.
 
     python -m scripts.try_analyze_document [documentId]
 """

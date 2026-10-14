@@ -89,6 +89,42 @@ def analysis_id(db_session: Session, document_id: UUID) -> UUID:
 
 
 @pytest.fixture
+def explained_item_id(db_session: Session, document_id: UUID, analysis_id: UUID) -> UUID:
+    """설명 항목(explanation_items)이 FK로 참조하는 추출 항목을 하나 만든다.
+
+    상위 행 ai_explanations, explanation_sections도 함께 만든다. 값은 V2의 NOT NULL·CHECK를 따른다.
+    """
+    item_id, explanation_id, section_id = uuid4(), uuid4(), uuid4()
+    db_session.execute(
+        text(
+            "INSERT INTO extracted_items (id, analysis_id, item_type, source_text)"
+            " VALUES (:id, :analysis_id, 'OTHER', '합성 문장')"
+        ),
+        {"id": item_id, "analysis_id": analysis_id},
+    )
+    db_session.execute(
+        text("INSERT INTO ai_explanations (id, document_id) VALUES (:id, :document_id)"),
+        {"id": explanation_id, "document_id": document_id},
+    )
+    db_session.execute(
+        text(
+            "INSERT INTO explanation_sections"
+            " (id, explanation_id, section_type, title, section_order)"
+            " VALUES (:id, :explanation_id, 'LAB_RESULT', '합성 섹션', 1)"
+        ),
+        {"id": section_id, "explanation_id": explanation_id},
+    )
+    db_session.execute(
+        text(
+            "INSERT INTO explanation_items (id, section_id, extracted_item_id, label, item_order)"
+            " VALUES (:id, :section_id, :item_id, '합성 설명', 1)"
+        ),
+        {"id": uuid4(), "section_id": section_id, "item_id": item_id},
+    )
+    return item_id
+
+
+@pytest.fixture
 def session_factory(db_session: Session) -> sessionmaker[Session]:
     """스스로 commit하는 저장소에 넘길 session factory.
 

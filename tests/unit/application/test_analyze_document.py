@@ -423,11 +423,12 @@ def test_rendered_page_write_failure_marks_failed() -> None:
         ({"target": None}, ["find_target"]),
         ({"started": False}, ["find_target", "mark_started"]),
     ],
+    ids=["no_target", "deleted_or_succeeded"],
 )
-def test_deleted_document_changes_nothing(
+def test_non_target_changes_nothing(
     repository_arguments: dict[str, Any], expected_calls: list[str]
 ) -> None:
-    """삭제된 문서(대상 없음, 또는 시작 직전에 삭제됨)는 원본도 읽지 않고 끝낸다."""
+    """대상 없음, 또는 시작 직전에 삭제됐거나 이미 SUCCEEDED인 분석은 원본도 읽지 않고 끝낸다."""
     repository = FakeRepository(**repository_arguments)
     reader = FakeReader()
     extractor = FakeExtractor()

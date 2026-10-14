@@ -125,7 +125,7 @@ def analyze_document(
 ) -> DocumentAnalysisResult:
     """문서 하나를 분석하고 결과와 상태를 기록한다.
 
-    문서가 없거나 삭제됐거나 분석 작업이 없으면 아무것도 바꾸지 않는다.
+    문서가 없거나 삭제됐거나, 분석 작업이 없거나 이미 SUCCEEDED면 아무것도 바꾸지 않는다.
     예상 밖 예외가 나면 FAILED로 기록한 뒤 그 예외를 다시 올린다.
     """
     target = repository.find_target(document_id)
