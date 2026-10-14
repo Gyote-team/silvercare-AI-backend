@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(default=30, gt=0, le=120)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_temperature: float = Field(default=0.2, ge=0, le=1)
+    llm_reasoning_effort: str = "low"
 
 
 @lru_cache

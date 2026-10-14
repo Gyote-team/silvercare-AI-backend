@@ -32,6 +32,7 @@ class OpenAiCompatibleLlmClient:
         response = self._client.chat.completions.create(
             model=self._settings.llm_model,
             temperature=self._settings.llm_temperature,
+            reasoning_effort=self._settings.llm_reasoning_effort,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system_prompt},
