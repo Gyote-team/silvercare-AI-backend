@@ -1,24 +1,37 @@
 from uuid import uuid4
 
-from app.schemas.ai_chat import (
+from app.application.use_cases.generate_result_document import GenerateResultDocumentUseCase
+from app.contracts.ai_result_document import (
     AnswerSentence,
     EvidenceSource,
     GeneratedAnswer,
     GenerateResultDocumentRequest,
     QuestionType,
 )
-from app.services.result_document_service import ResultDocumentService
+from app.domain.ai_result.error import AiResultErrorCode, AiResultGenerationError
 
 
 class FakeLlm:
+    """검증 가능한 고정 LLM 응답을 반환한다."""
+
     def __init__(self, answer: GeneratedAnswer) -> None:
         self.answer = answer
 
     def generate_grounded_answer(self, system_prompt: str, user_prompt: str) -> GeneratedAnswer:
+        """테스트용 생성 결과를 반환한다."""
         return self.answer
 
 
+class FailingLlm:
+    """정규화된 LLM 생성 오류를 발생시킨다."""
+
+    def generate_grounded_answer(self, system_prompt: str, user_prompt: str) -> GeneratedAnswer:
+        """AI 공급자 시간 초과를 흉내 낸다."""
+        raise AiResultGenerationError(AiResultErrorCode.AI_TIMEOUT, retryable=True)
+
+
 def request_with_evidence(citation_id):
+    """원문 근거가 하나인 결과 문서 요청을 만든다."""
     return GenerateResultDocumentRequest(
         request_id=uuid4(),
         patient_id=uuid4(),
@@ -35,7 +48,8 @@ def request_with_evidence(citation_id):
 
 
 def test_medical_decision_question_is_blocked_without_llm_call():
-    service = ResultDocumentService(
+    """진단·처방 판단 질문은 LLM 호출 전에 차단한다."""
+    service = GenerateResultDocumentUseCase(
         FakeLlm(
             GeneratedAnswer(
                 title="unused",
@@ -53,8 +67,9 @@ def test_medical_decision_question_is_blocked_without_llm_call():
 
 
 def test_response_without_allowed_citation_is_not_exposed():
+    """허용되지 않은 citation만 든 문장은 응답에서 제외한다."""
     allowed = uuid4()
-    service = ResultDocumentService(
+    service = GenerateResultDocumentUseCase(
         FakeLlm(
             GeneratedAnswer(
                 title="설명",
@@ -71,8 +86,9 @@ def test_response_without_allowed_citation_is_not_exposed():
 
 
 def test_grounded_response_is_returned():
+    """허용 근거를 인용한 문장은 COMPLETE 결과로 반환한다."""
     allowed = uuid4()
-    service = ResultDocumentService(
+    service = GenerateResultDocumentUseCase(
         FakeLlm(
             GeneratedAnswer(
                 title="문서 쉬운 설명",
@@ -91,3 +107,13 @@ def test_grounded_response_is_returned():
 
     assert result.result_status == "COMPLETE"
     assert result.title == "문서 쉬운 설명"
+
+
+def test_llm_timeout_is_returned_as_retryable_failed_result():
+    """LLM 시간 초과는 민감한 세부 정보 없이 재시도 가능한 실패로 반환한다."""
+    result = GenerateResultDocumentUseCase(FailingLlm()).generate(request_with_evidence(uuid4()))
+
+    assert result.failed is True
+    assert result.error_code == "AI_TIMEOUT"
+    assert result.retryable is True
+    assert result.answer is None

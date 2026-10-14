@@ -79,7 +79,10 @@ class GenerateResultDocumentResponse(BaseModel):
     request_id: UUID
     question_type: QuestionType
     blocked: bool
+    failed: bool = False
     block_reason: str | None = None
+    error_code: str | None = None
+    retryable: bool = False
     policy_version: str = "safety-v1"
     user_message: str | None = None
     result_status: str | None = None

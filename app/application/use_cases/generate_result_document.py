@@ -2,29 +2,30 @@
 
 import json
 
-from app.infrastructure.providers.llm.openai_compatible_client import LlmClient
-from app.schemas.ai_chat import (
+from app.contracts.ai_result_document import (
     GeneratedAnswer,
     GenerateResultDocumentRequest,
     GenerateResultDocumentResponse,
     QuestionType,
 )
-from app.services.question_classifier_service import QuestionClassifierService
-from app.services.safety_check_service import SafetyCheckService
+from app.domain.ai_result.error import AiResultGenerationError
+from app.domain.ai_result.question_classifier import QuestionClassifier
+from app.domain.ai_result.safety_check import SafetyCheck
+from app.infrastructure.providers.llm.openai_compatible_client import LlmClient
 
 
-class ResultDocumentService:
+class GenerateResultDocumentUseCase:
     """LLM 호출 전후에 안전성과 citation 무결성을 강제한다."""
 
     def __init__(
         self,
         llm_client: LlmClient,
-        safety_checks: SafetyCheckService | None = None,
-        classifier: QuestionClassifierService | None = None,
+        safety_checks: SafetyCheck | None = None,
+        classifier: QuestionClassifier | None = None,
     ) -> None:
         self._llm_client = llm_client
-        self._safety_checks = safety_checks or SafetyCheckService()
-        self._classifier = classifier or QuestionClassifierService()
+        self._safety_checks = safety_checks or SafetyCheck()
+        self._classifier = classifier or QuestionClassifier()
 
     def generate(self, request: GenerateResultDocumentRequest) -> GenerateResultDocumentResponse:
         blocked_type = self._safety_checks.classify(request.question)
@@ -58,10 +59,21 @@ class ResultDocumentService:
                 user_message="답변에 사용할 수 있는 의료문서 또는 건강기록 근거를 찾지 못했어요.",
             )
 
-        answer = self._llm_client.generate_grounded_answer(
-            self._system_prompt(question_type),
-            self._user_prompt(request, question_type),
-        )
+        try:
+            answer = self._llm_client.generate_grounded_answer(
+                self._system_prompt(question_type),
+                self._user_prompt(request, question_type),
+            )
+        except AiResultGenerationError as error:
+            return GenerateResultDocumentResponse(
+                request_id=request.request_id,
+                question_type=question_type,
+                blocked=False,
+                failed=True,
+                error_code=error.code.value,
+                retryable=error.retryable,
+                user_message=error.user_message(),
+            )
         return self._validated_response(request, question_type, answer)
 
     @staticmethod

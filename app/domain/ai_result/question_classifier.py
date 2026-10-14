@@ -1,9 +1,9 @@
 """가이드형 RAG 채팅의 질문 유형을 규칙으로 분류한다."""
 
-from app.schemas.ai_chat import QuestionType
+from app.contracts.ai_result_document import QuestionType
 
 
-class QuestionClassifierService:
+class QuestionClassifier:
     """MVP에서는 설명 가능한 규칙을 사용하며, 이후 LLM JSON 분류기를 추가할 수 있다."""
 
     def classify(self, question: str, hint: QuestionType | None) -> QuestionType:

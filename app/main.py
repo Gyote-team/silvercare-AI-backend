@@ -2,9 +2,11 @@
 
 from fastapi import FastAPI
 
-from app.routers.ai_result_documents import router as ai_result_document_router
+from app.api.error_handlers import register_error_handlers
+from app.api.internal.v1.ai_result_document_router import router as ai_result_document_router
 
 app = FastAPI(title="SilverCare AI Backend")
+register_error_handlers(app)
 app.include_router(ai_result_document_router)
 
 

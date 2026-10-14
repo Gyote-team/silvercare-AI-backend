@@ -3,10 +3,19 @@
 import json
 from typing import Protocol
 
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AuthenticationError,
+    BadRequestError,
+    OpenAI,
+    RateLimitError,
+)
 
+from app.contracts.ai_result_document import GeneratedAnswer
 from app.core.config import Settings
-from app.schemas.ai_chat import GeneratedAnswer
+from app.domain.ai_result.error import AiResultErrorCode, AiResultGenerationError
 
 
 class LlmClient(Protocol):
@@ -22,24 +31,48 @@ class OpenAiCompatibleLlmClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._client = OpenAI(
-            api_key=settings.llm_api_key.get_secret_value(),
+            api_key=settings.llm_api_key.get_secret_value() if settings.llm_api_key else "",
             base_url=settings.llm_base_url,
             timeout=settings.llm_timeout_seconds,
             max_retries=settings.llm_max_retries,
         )
 
     def generate_grounded_answer(self, system_prompt: str, user_prompt: str) -> GeneratedAnswer:
-        response = self._client.chat.completions.create(
-            model=self._settings.llm_model,
-            temperature=self._settings.llm_temperature,
-            reasoning_effort=self._settings.llm_reasoning_effort,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
+        if self._settings.llm_api_key is None:
+            raise AiResultGenerationError(
+                AiResultErrorCode.AI_GENERATION_FAILED, retryable=False
+            )
+        try:
+            response = self._client.chat.completions.create(
+                model=self._settings.llm_model,
+                temperature=self._settings.llm_temperature,
+                reasoning_effort=self._settings.llm_reasoning_effort,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+        except APITimeoutError:
+            raise AiResultGenerationError(AiResultErrorCode.AI_TIMEOUT, retryable=True) from None
+        except RateLimitError:
+            raise AiResultGenerationError(AiResultErrorCode.AI_RATE_LIMIT, retryable=True) from None
+        except (AuthenticationError, BadRequestError):
+            raise AiResultGenerationError(
+                AiResultErrorCode.AI_GENERATION_FAILED, retryable=False
+            ) from None
+        except (APIConnectionError, APIStatusError):
+            raise AiResultGenerationError(
+                AiResultErrorCode.AI_GENERATION_FAILED, retryable=True
+            ) from None
         content = response.choices[0].message.content
         if not content:
-            raise ValueError("LLM 응답 본문이 비어 있습니다.")
-        return GeneratedAnswer.model_validate(json.loads(content))
+            raise AiResultGenerationError(
+                AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True
+            )
+        try:
+            return GeneratedAnswer.model_validate(json.loads(content))
+        except (json.JSONDecodeError, ValueError):
+            raise AiResultGenerationError(
+                AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True
+            ) from None

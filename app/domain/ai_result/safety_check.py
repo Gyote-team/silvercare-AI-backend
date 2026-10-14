@@ -1,9 +1,9 @@
 """의료 판단·처방 변경 질문을 보수적으로 차단한다."""
 
-from app.schemas.ai_chat import QuestionType
+from app.contracts.ai_result_document import QuestionType
 
 
-class SafetyCheckService:
+class SafetyCheck:
     """규칙 기반 1차 안전 검사다. LLM은 차단 뒤 호출하지 않는다."""
 
     _medical_decision_keywords = (
