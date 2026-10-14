@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     database_url: str
     ai_internal_token: SecretStr = Field(min_length=1)
     storage_local_root: str = Field(min_length=1)
+    llm_provider: str = "gemini_openai_compatible"
+    llm_api_key: SecretStr = Field(min_length=1)
+    llm_base_url: str = Field(min_length=1)
+    llm_model: str = Field(min_length=1)
+    llm_timeout_seconds: float = Field(default=30, gt=0, le=120)
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
+    llm_temperature: float = Field(default=0.2, ge=0, le=1)
 
 
 @lru_cache

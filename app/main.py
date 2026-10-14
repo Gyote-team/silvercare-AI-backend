@@ -2,7 +2,10 @@
 
 from fastapi import FastAPI
 
+from app.routers.ai_result_documents import router as ai_result_document_router
+
 app = FastAPI(title="SilverCare AI Backend")
+app.include_router(ai_result_document_router)
 
 
 @app.get("/health")
