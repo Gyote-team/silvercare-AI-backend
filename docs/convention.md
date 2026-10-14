@@ -62,17 +62,28 @@ Spring의 Javadoc 규칙을 Python docstring으로 옮긴 것입니다.
 - 코드를 그대로 읽어 주는 주석은 쓰지 않습니다. "무엇을/왜"만 씁니다.
 
 ```python
-"""원본 바이트를 페이지별 PNG로 나눈다."""
+"""주문 금액에 쿠폰 할인을 적용한다."""
+
+from enum import StrEnum
 
 
-class PageSplitError(Exception):
-    """페이지 분리 실패. 메시지에는 오류 코드만 담는다."""
+class CouponErrorCode(StrEnum):
+    """쿠폰을 적용하지 못한 이유."""
+
+    EXPIRED = "EXPIRED"
+    BELOW_MINIMUM = "BELOW_MINIMUM"  # 주문 금액이 최소 사용 금액보다 적음
 
 
-def split_pages(
-    data: bytes, mime_type: str, *, render_dpi: int, max_pages: int, max_side_px: int
-) -> list[PageImage]:
-    """원본 바이트를 페이지별 PNG로 나눈다. 실패하면 PageSplitError를 던진다."""
+class CouponError(Exception):
+    """쿠폰 적용 실패. 메시지에는 오류 코드만 담는다."""
+
+
+def apply_coupon(order_amount: int, discount_rate: float, *, minimum_amount: int) -> int:
+    """할인을 적용한 금액을 반환한다. 적용할 수 없으면 CouponError를 던진다."""
+    if order_amount < minimum_amount:
+        raise CouponError(CouponErrorCode.BELOW_MINIMUM.value)
+    # 원 단위 미만은 고객에게 불리하지 않게 버린다.
+    return int(order_amount * (1 - discount_rate))
 ```
 
 ### 타입 힌트
