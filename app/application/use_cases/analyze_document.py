@@ -27,13 +27,9 @@ from app.application.ports.page_extractor import (
     PageExtractor,
     VlmUsage,
 )
-from app.domain.document.document_analysis import (
-    AnalysisErrorCode,
-    AnalysisFailure,
-    DocumentStatus,
-    FailedStep,
-)
+from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
 from app.domain.document.page_split import PageSplitError
+from app.domain.operation.error_code import AnalysisErrorCode, FailedStep
 from app.pipelines.documents.steps.extract_pages import PageExtractionOutcome, extract_pages
 from app.pipelines.documents.steps.load_document_pages import load_document_pages
 from app.pipelines.documents.steps.save_rendered_pages import save_rendered_pages
@@ -167,9 +163,14 @@ def analyze_document(
 
 def _fetch_failure(error: Exception) -> AnalysisFailure:
     if isinstance(error, PageSplitError):
-        detail_code, retryable = error.code.value, False
-    else:
-        detail_code, retryable = _STORAGE_FAILURES[type(error)]
+        # 같은 파일을 다시 나눠도 결과가 같으므로 재시도하지 않는다.
+        return AnalysisFailure(
+            error_code=AnalysisErrorCode.DOCUMENT_PAGE_SPLIT_FAILED,
+            failed_step=FailedStep.PAGE_SPLIT,
+            retryable=False,
+            detail_code=error.code.value,
+        )
+    detail_code, retryable = _STORAGE_FAILURES[type(error)]
     return AnalysisFailure(
         error_code=AnalysisErrorCode.OBJECT_FETCH_FAILED,
         failed_step=FailedStep.OBJECT_FETCH,

@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.domain.operation.error_code import AnalysisErrorCode, FailedStep
+
 
 class DocumentStatus(StrEnum):
     """문서 상태. documents.status의 CHECK 제약 값과 같다."""
@@ -22,27 +24,6 @@ class AnalysisStatus(StrEnum):
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
-
-
-class AnalysisErrorCode(StrEnum):
-    """분석 실패 원인. 노션 FC-15 errorCode 중 문서 분석이 쓰는 값이다."""
-
-    OBJECT_FETCH_FAILED = "OBJECT_FETCH_FAILED"
-    VLM_TIMEOUT = "VLM_TIMEOUT"
-    VLM_RATE_LIMIT = "VLM_RATE_LIMIT"
-    STRUCTURE_VALIDATION_FAILED = "STRUCTURE_VALIDATION_FAILED"
-    AI_GENERATION_FAILED = "AI_GENERATION_FAILED"
-
-
-class FailedStep(StrEnum):
-    """노션 FC-15 DOCUMENT_ANALYSIS의 failedStep 중 지금 쓰는 값이다.
-
-    CHUNKING은 청킹 단계를 만들 때 추가한다.
-    """
-
-    OBJECT_FETCH = "OBJECT_FETCH"
-    VLM_EXTRACTION = "VLM_EXTRACTION"
-    STRUCTURE_VALIDATION = "STRUCTURE_VALIDATION"
 
 
 @dataclass(frozen=True)

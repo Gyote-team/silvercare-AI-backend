@@ -22,12 +22,7 @@ from app.application.ports.page_extractor import (
     VlmUsage,
 )
 from app.application.use_cases.analyze_document import DocumentAnalysisResult, analyze_document
-from app.domain.document.document_analysis import (
-    AnalysisErrorCode,
-    AnalysisFailure,
-    DocumentStatus,
-    FailedStep,
-)
+from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
 from app.domain.document.document_page import RenderedPage
 from app.domain.document.page_extraction import (
     DocumentType,
@@ -35,7 +30,8 @@ from app.domain.document.page_extraction import (
     ExtractedItemType,
     PageExtraction,
 )
-from app.domain.document.page_split import PageImage
+from app.domain.document.page_split import PageImage, PageSplitError, PageSplitErrorCode
+from app.domain.operation.error_code import AnalysisErrorCode, FailedStep
 
 DOCUMENT_ID = UUID("11111111-2222-3333-4444-555555555555")
 ANALYSIS_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
@@ -392,11 +388,32 @@ def test_page_split_failure_marks_failed() -> None:
     assert extractor.requested_page_nos == []
     assert result.document_status is DocumentStatus.FAILED
     assert result.failure == AnalysisFailure(
-        error_code=AnalysisErrorCode.OBJECT_FETCH_FAILED,
-        failed_step=FailedStep.OBJECT_FETCH,
+        error_code=AnalysisErrorCode.DOCUMENT_PAGE_SPLIT_FAILED,
+        failed_step=FailedStep.PAGE_SPLIT,
         retryable=False,
         detail_code="CORRUPTED_FILE",
     )
+
+
+@pytest.mark.parametrize("code", list(PageSplitErrorCode))
+def test_page_split_error_code_mapping(code: PageSplitErrorCode) -> None:
+    """분리 오류 코드는 모두 DOCUMENT_PAGE_SPLIT_FAILED / PAGE_SPLIT, 재시도 불가로 기록한다."""
+    repository = FakeRepository()
+    # 입력별 분리 오류는 분리기 테스트가 확인하므로, 여기서는 오류를 바로 던진다.
+    reader = FakeReader(error=PageSplitError(code))
+
+    result = run(repository, reader=reader)
+
+    assert repository.calls[-1] == (
+        "mark_failed",
+        AnalysisFailure(
+            error_code=AnalysisErrorCode.DOCUMENT_PAGE_SPLIT_FAILED,
+            failed_step=FailedStep.PAGE_SPLIT,
+            retryable=False,
+            detail_code=code.value,
+        ),
+    )
+    assert result.document_status is DocumentStatus.FAILED
 
 
 def test_rendered_page_write_failure_marks_failed() -> None:

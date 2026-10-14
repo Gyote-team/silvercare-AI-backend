@@ -11,11 +11,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.application.ports.document_analysis_repository import AnalysisTarget
 from app.domain.document.document_analysis import (
-    AnalysisErrorCode,
     AnalysisFailure,
     AnalysisStatus,
     DocumentStatus,
-    FailedStep,
 )
 from app.domain.document.document_page import PageOcrStatus, RenderedPage, rendered_page_key
 from app.domain.document.page_extraction import (
@@ -25,6 +23,7 @@ from app.domain.document.page_extraction import (
     PageExtraction,
     SourceBox,
 )
+from app.domain.operation.error_code import AnalysisErrorCode, FailedStep
 from app.infrastructure.db.repositories.document_analysis_repository import (
     SqlAlchemyDocumentAnalysisRepository,
 )
@@ -404,6 +403,25 @@ def test_mark_failed_keeps_items_referenced_by_explanation(
         {"id": target.analysis_id},
     ).all()
     assert remaining == [explained_item_id]
+
+
+def test_mark_failed_stores_page_split_failure(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
+) -> None:
+    """페이지 분리 실패의 오류 코드·단계·세부 코드가 그대로 저장된다."""
+    failure = AnalysisFailure(
+        error_code=AnalysisErrorCode.DOCUMENT_PAGE_SPLIT_FAILED,
+        failed_step=FailedStep.PAGE_SPLIT,
+        retryable=False,
+        detail_code="PASSWORD_PROTECTED",
+    )
+
+    repository.mark_failed(target, failure, COMPLETED_AT)
+
+    analysis = fetch_analysis(db_session, target.analysis_id)
+    assert analysis.error_code == "DOCUMENT_PAGE_SPLIT_FAILED"
+    assert analysis.failed_step == "PAGE_SPLIT"
+    assert (analysis.error_message, analysis.retryable) == ("PASSWORD_PROTECTED", False)
 
 
 def test_mark_started_clears_previous_failure(
