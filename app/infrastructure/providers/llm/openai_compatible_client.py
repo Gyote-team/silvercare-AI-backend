@@ -43,16 +43,19 @@ class OpenAiCompatibleLlmClient:
                 AiResultErrorCode.AI_GENERATION_FAILED, retryable=False
             )
         try:
-            response = self._client.chat.completions.create(
-                model=self._settings.llm_model,
-                temperature=self._settings.llm_temperature,
-                reasoning_effort=self._settings.llm_reasoning_effort,
-                response_format={"type": "json_object"},
-                messages=[
+            request_kwargs = {
+                "model": self._settings.llm_model,
+                "temperature": self._settings.llm_temperature,
+                "response_format": {"type": "json_object"},
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-            )
+            }
+            # Gemini OpenAI 호환 API는 OpenAI 전용 reasoning_effort를 받지 않는다.
+            if self._settings.llm_provider != "gemini_openai_compatible":
+                request_kwargs["reasoning_effort"] = self._settings.llm_reasoning_effort
+            response = self._client.chat.completions.create(**request_kwargs)
         except APITimeoutError:
             raise AiResultGenerationError(AiResultErrorCode.AI_TIMEOUT, retryable=True) from None
         except RateLimitError:
