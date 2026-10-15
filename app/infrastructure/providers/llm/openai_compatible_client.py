@@ -40,7 +40,7 @@ class OpenAiCompatibleLlmClient:
     def generate_grounded_answer(self, system_prompt: str, user_prompt: str) -> GeneratedAnswer:
         if self._settings.llm_api_key is None:
             raise AiResultGenerationError(
-                AiResultErrorCode.AI_GENERATION_FAILED, retryable=False
+                AiResultErrorCode.AI_API_KEY_MISSING, retryable=False
             )
         try:
             request_kwargs = {
@@ -60,11 +60,19 @@ class OpenAiCompatibleLlmClient:
             raise AiResultGenerationError(AiResultErrorCode.AI_TIMEOUT, retryable=True) from None
         except RateLimitError:
             raise AiResultGenerationError(AiResultErrorCode.AI_RATE_LIMIT, retryable=True) from None
-        except (AuthenticationError, BadRequestError):
+        except AuthenticationError:
             raise AiResultGenerationError(
-                AiResultErrorCode.AI_GENERATION_FAILED, retryable=False
+                AiResultErrorCode.AI_AUTH_FAILED, retryable=False
             ) from None
-        except (APIConnectionError, APIStatusError):
+        except BadRequestError:
+            raise AiResultGenerationError(
+                AiResultErrorCode.AI_REQUEST_REJECTED, retryable=False
+            ) from None
+        except APIConnectionError:
+            raise AiResultGenerationError(
+                AiResultErrorCode.AI_CONNECTION_FAILED, retryable=True
+            ) from None
+        except APIStatusError:
             raise AiResultGenerationError(
                 AiResultErrorCode.AI_GENERATION_FAILED, retryable=True
             ) from None

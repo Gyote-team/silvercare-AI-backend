@@ -22,7 +22,7 @@ class Settings(BaseSettings):
         default="https://generativelanguage.googleapis.com/v1beta/openai/", min_length=1
     )
     llm_model: str = Field(default="gemini-3.8-flash", min_length=1)
-    llm_timeout_seconds: float = Field(default=30, gt=0, le=120)
+    llm_timeout_seconds: float = Field(default=90, gt=0, le=120)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_temperature: float = Field(default=0.2, ge=0, le=1)
     llm_reasoning_effort: str = "low"
