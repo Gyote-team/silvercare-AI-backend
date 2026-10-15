@@ -37,6 +37,10 @@ class OpenAiCompatibleLlmClient:
             max_retries=settings.llm_max_retries,
         )
 
+    def close(self) -> None:
+        """앱 종료 시 연결 풀을 닫는다."""
+        self._client.close()
+
     def generate_grounded_answer(self, system_prompt: str, user_prompt: str) -> GeneratedAnswer:
         if self._settings.llm_api_key is None:
             raise AiResultGenerationError(

@@ -62,7 +62,7 @@ class AnswerSentence(BaseModel):
     """화면에 노출 가능한 문장과 근거의 연결이다."""
 
     text: str = Field(min_length=1, max_length=2000)
-    citation_ids: list[UUID] = Field(min_length=1, max_length=8)
+    citation_ids: list[UUID] = Field(max_length=8)
 
 
 class GeneratedAnswer(BaseModel):

@@ -2,16 +2,14 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 
-from app.application.use_cases.generate_result_document import GenerateResultDocumentUseCase
 from app.contracts.ai_result_document import (
     GenerateResultDocumentRequest,
     GenerateResultDocumentResponse,
 )
 from app.core.config import Settings, get_settings
 from app.domain.common.error import ApiError, CommonErrorCode
-from app.infrastructure.providers.llm.openai_compatible_client import OpenAiCompatibleLlmClient
 
 router = APIRouter(prefix="/internal/ai-result-documents", tags=["AI result documents"])
 SettingsDependency = Annotated[Settings, Depends(get_settings)]
@@ -30,8 +28,7 @@ def require_internal_token(
 def generate(
     request: GenerateResultDocumentRequest,
     _: Annotated[None, Depends(require_internal_token)],
-    settings: SettingsDependency,
+    http_request: Request,
 ) -> GenerateResultDocumentResponse:
     """근거가 검증된 상세 설명 또는 비교 문서를 생성한다."""
-    use_case = GenerateResultDocumentUseCase(OpenAiCompatibleLlmClient(settings))
-    return use_case.generate(request)
+    return http_request.app.state.ai_result_document_use_case.generate(request)

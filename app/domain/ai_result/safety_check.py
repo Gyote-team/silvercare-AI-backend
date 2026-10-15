@@ -7,7 +7,9 @@ class SafetyCheck:
     """규칙 기반 1차 안전 검사다. LLM은 차단 뒤 호출하지 않는다."""
 
     _medical_decision_keywords = (
-        "진단",
+        "진단해",
+        "진단을 내려",
+        "진단 내려",
         "병인가",
         "병이야",
         "약을 끊",

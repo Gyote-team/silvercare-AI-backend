@@ -112,7 +112,7 @@ sentences 원소는 text와 citation_ids 배열을 가져야 합니다."""
         sentences = [
             sentence
             for sentence in answer.sentences
-            if set(sentence.citation_ids).issubset(allowed)
+            if sentence.citation_ids and set(sentence.citation_ids).issubset(allowed)
         ]
         if not sentences:
             return GenerateResultDocumentResponse(

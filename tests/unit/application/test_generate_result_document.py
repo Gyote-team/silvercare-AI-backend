@@ -109,6 +109,49 @@ def test_grounded_response_is_returned():
     assert result.title == "문서 쉬운 설명"
 
 
+def test_uncited_sentence_is_removed_from_partial_response():
+    """근거가 없는 문장만 제외하고 나머지 설명은 유지한다."""
+    allowed = uuid4()
+    service = GenerateResultDocumentUseCase(
+        FakeLlm(
+            GeneratedAnswer(
+                title="설명",
+                answer="근거 있는 문장. 근거 없는 문장.",
+                sentences=[
+                    AnswerSentence(text="근거 있는 문장", citation_ids=[allowed]),
+                    AnswerSentence(text="근거 없는 문장", citation_ids=[]),
+                ],
+            )
+        )
+    )
+
+    result = service.generate(request_with_evidence(allowed))
+
+    assert result.result_status == "PARTIAL"
+    assert result.answer == "근거 있는 문장"
+    assert len(result.sentences) == 1
+
+
+def test_all_uncited_sentences_are_insufficient():
+    """모든 문장에 근거가 없으면 답변을 노출하지 않는다."""
+    allowed = uuid4()
+    service = GenerateResultDocumentUseCase(
+        FakeLlm(
+            GeneratedAnswer(
+                title="설명",
+                answer="근거 없는 문장",
+                sentences=[AnswerSentence(text="근거 없는 문장", citation_ids=[])],
+            )
+        )
+    )
+
+    result = service.generate(request_with_evidence(allowed))
+
+    assert result.result_status == "INSUFFICIENT"
+    assert result.answer is None
+    assert result.sentences == []
+
+
 def test_llm_timeout_is_returned_as_retryable_failed_result():
     """LLM 시간 초과는 민감한 세부 정보 없이 재시도 가능한 실패로 반환한다."""
     result = GenerateResultDocumentUseCase(FailingLlm()).generate(request_with_evidence(uuid4()))
