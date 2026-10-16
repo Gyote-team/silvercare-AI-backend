@@ -101,6 +101,29 @@ Spring의 `ErrorCode` + `BusinessException` 구조를 따릅니다.
 - 외부 라이브러리 예외를 바꿔 던질 때는 `raise ... from None`으로 원래 메시지가 로그에 섞이지 않게 합니다.
 - `except Exception`은 외부 라이브러리 경계에서만 쓰고, 이유를 주석으로 남깁니다.
 
+### 공통 HTTP 오류 응답
+
+Spring 백엔드와 AI 백엔드는 오류 본문을 아래 세 필드로 통일합니다.
+
+```json
+{
+  "code": "GLOBAL_002",
+  "message": "요청 값이 올바르지 않습니다.",
+  "timestamp": "2026-10-14T00:00:00+00:00"
+}
+```
+
+| 상황 | HTTP 상태 | 코드 | 처리 위치 |
+|---|---:|---|---|
+| 본문·경로·쿼리 입력 검증 실패 | 400 | `GLOBAL_002` | FastAPI 공통 예외 처리기 |
+| Spring 내부 토큰이 없거나 다름 | 401 | `AUTH_001` | 내부 API 인증 의존성 |
+| 동시 수정 등 현재 상태 충돌 | 409 | `GLOBAL_004` | 도메인 `ApiError` |
+| 처리되지 않은 서버 예외 | 500 | `GLOBAL_003` | FastAPI 공통 예외 처리기 |
+
+- 오류 응답에는 원문, 파일 경로, API 키, 내부 토큰, 공급자 오류 본문을 포함하지 않습니다.
+- AI 공급자 시간 초과·호출 한도·응답 형식 오류는 HTTP 500으로 흘리지 않습니다. 결과 문서 응답의 `failed`, `error_code`, `retryable`, `user_message`로 전달합니다.
+- `AI_TIMEOUT`, `AI_RATE_LIMIT`, `AI_GENERATION_FAILED`, `AI_RESPONSE_INVALID`은 AI 결과 생성 오류 코드이며, Spring은 이를 작업 실패 상태와 재시도 UI에 사용합니다.
+
 ### 설정
 
 - 설정 값(경로, 타임아웃, 토큰, DPI 같은 숫자)은 `app/core/config.py`의 `Settings`에서만 읽습니다. 코드에 직접 쓰지 않습니다.
