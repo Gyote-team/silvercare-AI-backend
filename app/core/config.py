@@ -1,6 +1,7 @@
 """환경 변수와 .env 파일에서 서버 설정을 읽는다."""
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,6 +15,28 @@ class Settings(BaseSettings):
     database_url: str
     ai_internal_token: SecretStr = Field(min_length=1)
     storage_local_root: str = Field(min_length=1)
+    llm_provider: str = "gemini_openai_compatible"
+    # 결과 문서 작업이 아닌 VLM 파이프라인도 이 설정을 사용하므로, 실제 호출 시점에만 키를 검증한다.
+    llm_api_key: SecretStr | None = None
+    llm_base_url: str = Field(
+        default="https://generativelanguage.googleapis.com/v1beta/openai/", min_length=1
+    )
+    llm_model: str = Field(default="gemini-3.8-flash", min_length=1)
+    llm_timeout_seconds: float = Field(default=90, gt=0, le=120)
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
+    llm_temperature: float = Field(default=0.2, ge=0, le=1)
+    llm_reasoning_effort: str = "low"
+    document_render_dpi: int = Field(default=150, gt=0)
+    document_max_pages: int = Field(default=30, gt=0)
+    document_max_page_side_px: int = Field(default=2048, gt=0)
+    openai_api_key: SecretStr | None = None
+    openai_vlm_model: str = Field(default="gpt-5.6-sol", min_length=1)
+    openai_vlm_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "high"
+    openai_vlm_max_output_tokens: int = Field(default=16000, gt=0)
+    openai_vlm_timeout_seconds: float = Field(default=180, gt=0)
+    openai_vlm_connect_timeout_seconds: float = Field(default=10, gt=0)
+    openai_vlm_max_retries: int = Field(default=2, ge=0)
+    openai_vlm_retry_backoff_seconds: float = Field(default=1.0, ge=0)
 
 
 @lru_cache
