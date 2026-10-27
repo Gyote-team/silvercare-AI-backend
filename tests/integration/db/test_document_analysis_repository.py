@@ -1,7 +1,7 @@
 """분석 상태·추출 결과 저장소 테스트. 실제 PostgreSQL에 쓰고 테스트가 끝나면 롤백한다."""
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -30,6 +30,7 @@ from app.infrastructure.db.repositories.document_analysis_repository import (
 
 STARTED_AT = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
 COMPLETED_AT = datetime(2026, 10, 1, 9, 5, tzinfo=UTC)
+STALE_AFTER = timedelta(minutes=60)
 BOX = SourceBox(x=10, y=20, width=30, height=40)
 FAILURE = AnalysisFailure(
     error_code=AnalysisErrorCode.VLM_TIMEOUT,
@@ -112,7 +113,7 @@ def fetch_pages(session: Session, document_id: UUID) -> list[tuple[int, str, str
 @pytest.fixture
 def repository(session_factory: sessionmaker[Session]) -> SqlAlchemyDocumentAnalysisRepository:
     """테스트 연결에 묶인 저장소."""
-    return SqlAlchemyDocumentAnalysisRepository(session_factory)
+    return SqlAlchemyDocumentAnalysisRepository(session_factory, stale_after=STALE_AFTER)
 
 
 @pytest.fixture
@@ -379,6 +380,51 @@ def test_succeeded_analysis_is_not_restarted(
     ) == before
 
 
+def test_running_analysis_before_stale_is_not_restarted(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
+) -> None:
+    """RUNNING이고 stale_after가 지나지 않았으면 다시 시작하지 않고 아무것도 바꾸지 않는다."""
+    repository.mark_started(target, STARTED_AT)
+    before = (
+        fetch_document(db_session, target.document_id),
+        fetch_analysis(db_session, target.analysis_id),
+        fetch_pages(db_session, target.document_id),
+    )
+
+    assert repository.mark_started(target, STARTED_AT + STALE_AFTER - timedelta(minutes=1)) is False
+
+    assert (
+        fetch_document(db_session, target.document_id),
+        fetch_analysis(db_session, target.analysis_id),
+        fetch_pages(db_session, target.document_id),
+    ) == before
+
+
+def test_running_analysis_after_stale_is_restarted(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
+) -> None:
+    """RUNNING이어도 시작한 지 stale_after가 지나면 멈춘 것으로 보고 다시 시작한다."""
+    repository.mark_started(target, STARTED_AT)
+    restarted_at = STARTED_AT + STALE_AFTER
+
+    assert repository.mark_started(target, restarted_at) is True
+
+    analysis = fetch_analysis(db_session, target.analysis_id)
+    assert (analysis.status, analysis.started_at) == (AnalysisStatus.RUNNING, restarted_at)
+
+
+def test_running_analysis_without_started_at_is_restarted(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
+) -> None:
+    """시작 시각이 없는 RUNNING은 만료를 판단할 수 없어 다시 시작한다."""
+    db_session.execute(
+        text("UPDATE document_analyses SET status = 'RUNNING', started_at = NULL WHERE id = :id"),
+        {"id": target.analysis_id},
+    )
+
+    assert repository.mark_started(target, STARTED_AT) is True
+
+
 def test_mark_failed_keeps_items_referenced_by_explanation(
     db_session: Session,
     repository: SqlAlchemyDocumentAnalysisRepository,
@@ -430,7 +476,7 @@ def test_mark_started_clears_previous_failure(
     """실패한 분석을 다시 시작하면 이전 실패 기록과 완료 시각이 비워진다."""
     repository.mark_failed(target, FAILURE, COMPLETED_AT)
 
-    repository.mark_started(target, STARTED_AT)
+    assert repository.mark_started(target, STARTED_AT) is True
 
     analysis = fetch_analysis(db_session, target.analysis_id)
     assert (analysis.status, analysis.completed_at) == (AnalysisStatus.RUNNING, None)

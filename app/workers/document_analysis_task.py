@@ -1,6 +1,7 @@
 """Spring 요청과 분리해 문서 하나의 분석을 조립부터 실행까지 돌리는 백그라운드 작업이다."""
 
 import logging
+from datetime import timedelta
 from uuid import UUID
 
 from app.application.services.retrying_page_extractor import RetryingPageExtractor
@@ -25,7 +26,10 @@ def run_document_analysis(document_id: UUID, request_id: str) -> None:
     try:
         settings = get_settings()
         storage = LocalDocumentStorage(settings.storage_local_root)
-        repository = SqlAlchemyDocumentAnalysisRepository(get_session_factory())
+        repository = SqlAlchemyDocumentAnalysisRepository(
+            get_session_factory(),
+            stale_after=timedelta(minutes=settings.document_analysis_stale_minutes),
+        )
         inner = create_page_extractor(settings)
         extractor = RetryingPageExtractor(
             inner,

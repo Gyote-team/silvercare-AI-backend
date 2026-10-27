@@ -8,6 +8,7 @@ document_status가 '변경 없음'이면 문서가 없거나 삭제됐거나, �
 """
 
 import sys
+from datetime import timedelta
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -54,7 +55,10 @@ def main() -> None:
     session_factory = get_session_factory()
     document_id = pick_document_id(session_factory)
     storage = LocalDocumentStorage(settings.storage_local_root)
-    repository = SqlAlchemyDocumentAnalysisRepository(session_factory)
+    repository = SqlAlchemyDocumentAnalysisRepository(
+        session_factory,
+        stale_after=timedelta(minutes=settings.document_analysis_stale_minutes),
+    )
     inner = create_page_extractor(settings)
     extractor = RetryingPageExtractor(
         inner,

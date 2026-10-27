@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     document_render_dpi: int = Field(default=150, gt=0)
     document_max_pages: int = Field(default=30, gt=0)
     document_max_page_side_px: int = Field(default=2048, gt=0)
+    document_analysis_stale_minutes: int = Field(default=60, gt=0)
     openai_api_key: SecretStr | None = None
     openai_vlm_model: str = Field(default="gpt-5.6-sol", min_length=1)
     openai_vlm_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "high"

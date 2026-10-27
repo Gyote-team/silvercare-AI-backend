@@ -35,6 +35,8 @@ class DocumentAnalysisRepository(Protocol):
 
         분석이 이미 SUCCEEDED면 아무것도 바꾸지 않고 False를 반환한다. 재분석은 같은 행이 아니라
         새 분석 행으로 한다(시트 FC-08-03-02, 재시도 API가 새 행을 만든다).
+        분석이 RUNNING이고 아직 멈춘 것으로 볼 시간이 지나지 않았어도 False를 반환한다.
+        중복 실행을 막기 위해서다.
         """
         ...
 

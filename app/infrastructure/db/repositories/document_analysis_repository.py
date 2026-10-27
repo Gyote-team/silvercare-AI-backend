@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, insert, select, update
@@ -37,10 +37,12 @@ class SqlAlchemyDocumentAnalysisRepository:
     """메서드마다 session을 열고 끝날 때 commit한다. 메서드 하나가 트랜잭션 하나다.
 
     DocumentAnalysisRepository와 DocumentPageRepository 포트를 함께 구현한다.
+    stale_after는 RUNNING 분석을 멈춘 것으로 보고 다시 시작을 허용하기까지의 시간이다.
     """
 
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(self, session_factory: sessionmaker[Session], *, stale_after: timedelta) -> None:
         self._session_factory = session_factory
+        self._stale_after = stale_after
 
     def find_target(self, document_id: UUID) -> AnalysisTarget | None:
         """삭제되지 않은 문서와 그 문서의 최신 분석 작업을 읽는다."""
@@ -71,16 +73,25 @@ class SqlAlchemyDocumentAnalysisRepository:
     def mark_started(self, target: AnalysisTarget, started_at: datetime) -> bool:
         """문서를 PROCESSING, 분석을 RUNNING으로 바꾸고 이전 실행의 결과 컬럼을 비운다.
 
-        분석이 이미 SUCCEEDED면 아무것도 바꾸지 않고 False를 반환한다.
+        분석이 SUCCEEDED이거나, RUNNING이고 시작한 지 stale_after가 지나지 않았으면
+        아무것도 바꾸지 않고 False를 반환한다.
         """
         with self._session_factory.begin() as session:
-            status = session.execute(
-                select(DocumentAnalysisModel.status)
+            # 행 잠금 안에서 판단해야 동시 요청 중 하나만 시작한다.
+            analysis = session.execute(
+                select(DocumentAnalysisModel.status, DocumentAnalysisModel.started_at)
                 .where(DocumentAnalysisModel.id == target.analysis_id)
                 .with_for_update()
-            ).scalar_one()
+            ).one()
             # 끝난 분석은 다시 돌리지 않는다. 재분석은 새 분석 행으로 한다(FC-08-03-02).
-            if status == AnalysisStatus.SUCCEEDED:
+            if analysis.status == AnalysisStatus.SUCCEEDED:
+                return False
+            # 시작 시각이 없는 RUNNING은 만료를 판단할 수 없어 멈춘 것으로 본다.
+            if (
+                analysis.status == AnalysisStatus.RUNNING
+                and analysis.started_at is not None
+                and started_at - analysis.started_at < self._stale_after
+            ):
                 return False
             if not _update_document(session, target, DocumentStatus.PROCESSING, started_at):
                 return False
