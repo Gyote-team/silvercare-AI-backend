@@ -28,9 +28,9 @@ _MESSAGE_BY_CODE: dict[CommonErrorCode, str] = {
 }
 
 
-@dataclass(frozen=True)
+@dataclass
 class ApiError(Exception):
-    """공통 코드와 안전한 사용자 메시지만 HTTP 계층으로 전달한다."""
+    """공통 HTTP 오류. ASGI가 예외 traceback을 정리할 수 있도록 동결하지 않는다."""
 
     code: CommonErrorCode
 
