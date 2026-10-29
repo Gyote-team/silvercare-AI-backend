@@ -274,6 +274,9 @@ Redis queue에서 AI job을 받아 실행하는 비동기 worker 코드를 배�
 queue message에는 의료 문서 원문이나 음성 내용을 넣지 않고 `jobId`, `requestId`,
 object key 같은 최소 식별자만 넣습니다.
 
+문서 분석이 만료(`DOCUMENT_ANALYSIS_STALE_MINUTES`) 전에 프로세스와 함께 죽으면 그 분석은
+RUNNING으로 남습니다. 만료 뒤 같은 문서로 분석 요청이 다시 와야 재시작됩니다.
+
 ## `app/shared`
 
 여러 계층에서 사용하는 작은 순수 유틸리티를 배치합니다. UUID, 시간, 해시, 텍스트

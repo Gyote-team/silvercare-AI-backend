@@ -19,9 +19,13 @@ def request_document_analysis(
     body: DocumentAnalysisRequest,
     _: Annotated[None, Depends(require_internal_token)],
     background_tasks: BackgroundTasks,
-) -> Response:
-    """분석을 백그라운드에 등록하고 바로 응답한다. 202 등록, 400 입력 오류, 401 토큰 오류."""
+) -> None:
+    """분석을 백그라운드에 등록하고 바로 응답한다. 202 등록, 400 입력 오류, 401 토큰 오류.
+
+    objectKey·mimeType은 형식만 검증한다. 분석은 DB의 storage_key·mime_type을 사용한다.
+    """
     if body.document_id != document_id:
         raise ApiError(CommonErrorCode.INVALID_REQUEST)
-    background_tasks.add_task(run_document_analysis, document_id, body.request_id)
-    return Response(status_code=202)
+    background_tasks.add_task(
+        run_document_analysis, document_id, body.request_id, body.object_key, body.mime_type
+    )

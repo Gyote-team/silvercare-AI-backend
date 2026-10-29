@@ -43,6 +43,7 @@ class DocumentAnalysisRepository(Protocol):
     def save_result(
         self,
         target: AnalysisTarget,
+        started_at: datetime,
         document_status: DocumentStatus,
         extractions_by_page_no: Mapping[int, PageExtraction],
         model_version: str | None,
@@ -52,14 +53,21 @@ class DocumentAnalysisRepository(Protocol):
 
         extractions_by_page_no에는 추출에 성공한 페이지만 담는다. 그 페이지는 원문과 함께
         SUCCEEDED(글자가 없으면 원문 없이 SKIPPED)로, 나머지 페이지는 원문 없이 FAILED로 기록한다.
+        분석이 RUNNING이고 started_at이 mark_started에 넘긴 값과 같을 때만 저장한다. 아니면
+        다른 실행이 맡은 분석이므로 아무것도 바꾸지 않고 False를 반환한다.
         """
         ...
 
     def mark_failed(
-        self, target: AnalysisTarget, failure: AnalysisFailure, completed_at: datetime
+        self,
+        target: AnalysisTarget,
+        started_at: datetime,
+        failure: AnalysisFailure,
+        completed_at: datetime,
     ) -> bool:
         """이 분석의 추출 항목을 지우고, 문서와 분석을 FAILED로 바꾸고 실패 기록을 남긴다.
 
         문서의 모든 페이지도 원문 없이 FAILED로 바꾼다. 설명이 참조해 지울 수 없는 항목은 남긴다.
+        save_result와 같이 RUNNING이고 started_at이 같을 때만 저장하고, 아니면 False를 반환한다.
         """
         ...

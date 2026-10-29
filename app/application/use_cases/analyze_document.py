@@ -125,8 +125,10 @@ def analyze_document(
     예상 밖 예외가 나면 FAILED로 기록한 뒤 그 예외를 다시 올린다.
     """
     target = repository.find_target(document_id)
+    # 이 실행의 시작 시각. 결과를 저장할 때 이 실행이 아직 분석을 맡고 있는지 확인하는 데 쓴다.
+    started_at = datetime.now(UTC)
     # 시작 표시는 따로 commit해서 Spring 화면에 바로 보이게 한다.
-    if target is None or not repository.mark_started(target, datetime.now(UTC)):
+    if target is None or not repository.mark_started(target, started_at):
         logger.info("분석 대상이 아니어서 건너뜁니다: document_id=%s", document_id)
         return DocumentAnalysisResult(document_status=None)
 
@@ -143,11 +145,11 @@ def analyze_document(
             )
             save_rendered_pages(writer, page_repository, document_id, pages)
         except (PageSplitError, *_STORAGE_FAILURES) as error:
-            return _record_failure(repository, target, _fetch_failure(error))
+            return _record_failure(repository, target, started_at, _fetch_failure(error))
         step = FailedStep.VLM_EXTRACTION
         # VLM 호출은 오래 걸리므로 DB 트랜잭션 밖에서 한다.
         outcomes = extract_pages(extractor, pages)
-        return _record_outcomes(repository, target, len(pages), outcomes)
+        return _record_outcomes(repository, target, started_at, len(pages), outcomes)
     except Exception as error:
         # 예외 메시지에는 원문이나 경로가 들어 있을 수 있어 클래스 이름만 남긴다.
         logger.error(
@@ -157,7 +159,7 @@ def analyze_document(
             step,
             type(error).__name__,
         )
-        _record_unexpected_failure(repository, target, step)
+        _record_unexpected_failure(repository, target, started_at, step)
         raise
 
 
@@ -182,6 +184,7 @@ def _fetch_failure(error: Exception) -> AnalysisFailure:
 def _record_outcomes(
     repository: DocumentAnalysisRepository,
     target: AnalysisTarget,
+    started_at: datetime,
     page_count: int,
     outcomes: Sequence[PageExtractionOutcome],
 ) -> DocumentAnalysisResult:
@@ -198,12 +201,13 @@ def _record_outcomes(
             retryable=retryable,
             detail_code=code.value,
         )
-        return _record_failure(repository, target, failure)
+        return _record_failure(repository, target, started_at, failure)
 
     usages = tuple(result.usage for result in succeeded.values())
     status = DocumentStatus.READY if len(succeeded) == page_count else DocumentStatus.NEEDS_REVIEW
     saved = repository.save_result(
         target,
+        started_at,
         status,
         {page_no: result.extraction for page_no, result in succeeded.items()},
         usages[0].model_name,
@@ -221,9 +225,12 @@ def _record_outcomes(
 
 
 def _record_failure(
-    repository: DocumentAnalysisRepository, target: AnalysisTarget, failure: AnalysisFailure
+    repository: DocumentAnalysisRepository,
+    target: AnalysisTarget,
+    started_at: datetime,
+    failure: AnalysisFailure,
 ) -> DocumentAnalysisResult:
-    saved = repository.mark_failed(target, failure, datetime.now(UTC))
+    saved = repository.mark_failed(target, started_at, failure, datetime.now(UTC))
     logger.warning(
         "분석 실패: document_id=%s, analysis_id=%s, error_code=%s, failed_step=%s, detail=%s",
         target.document_id,
@@ -238,7 +245,10 @@ def _record_failure(
 
 
 def _record_unexpected_failure(
-    repository: DocumentAnalysisRepository, target: AnalysisTarget, step: FailedStep
+    repository: DocumentAnalysisRepository,
+    target: AnalysisTarget,
+    started_at: datetime,
+    step: FailedStep,
 ) -> None:
     failure = AnalysisFailure(
         error_code=AnalysisErrorCode.AI_GENERATION_FAILED,
@@ -248,7 +258,7 @@ def _record_unexpected_failure(
     )
     # 기록까지 실패해도 원래 예외를 가리지 않게 로그만 남긴다.
     try:
-        repository.mark_failed(target, failure, datetime.now(UTC))
+        repository.mark_failed(target, started_at, failure, datetime.now(UTC))
     except Exception as error:
         logger.error(
             "실패 기록 중 오류: document_id=%s, analysis_id=%s, error=%s",

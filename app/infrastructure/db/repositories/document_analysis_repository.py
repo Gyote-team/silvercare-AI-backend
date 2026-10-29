@@ -121,13 +121,19 @@ class SqlAlchemyDocumentAnalysisRepository:
     def save_result(
         self,
         target: AnalysisTarget,
+        started_at: datetime,
         document_status: DocumentStatus,
         extractions_by_page_no: Mapping[int, PageExtraction],
         model_version: str | None,
         completed_at: datetime,
     ) -> bool:
-        """추출 항목 교체, 페이지 원문 기록, 분석과 문서 상태 변경을 한 트랜잭션으로 묶는다."""
+        """추출 항목 교체, 페이지 원문 기록, 분석과 문서 상태 변경을 한 트랜잭션으로 묶는다.
+
+        이 실행이 분석을 맡고 있지 않으면(RUNNING이 아니거나 started_at이 다르면) False를 반환한다.
+        """
         with self._session_factory.begin() as session:
+            if not _lock_own_run(session, target, started_at):
+                return False
             if not _update_document(session, target, document_status, completed_at):
                 return False
             _delete_items(session, target)
@@ -174,13 +180,20 @@ class SqlAlchemyDocumentAnalysisRepository:
             return True
 
     def mark_failed(
-        self, target: AnalysisTarget, failure: AnalysisFailure, completed_at: datetime
+        self,
+        target: AnalysisTarget,
+        started_at: datetime,
+        failure: AnalysisFailure,
+        completed_at: datetime,
     ) -> bool:
         """추출 항목 삭제, 페이지 FAILED, 실패 기록, 문서와 분석 FAILED를 한 트랜잭션으로 묶는다.
 
         설명이 참조해 항목을 지울 수 없으면 항목은 남기고 나머지만 기록한다.
+        이 실행이 분석을 맡고 있지 않으면 save_result와 같이 False를 반환한다.
         """
         with self._session_factory.begin() as session:
+            if not _lock_own_run(session, target, started_at):
+                return False
             if not _update_document(session, target, DocumentStatus.FAILED, completed_at):
                 return False
             try:
@@ -206,6 +219,72 @@ class SqlAlchemyDocumentAnalysisRepository:
                 retryable=failure.retryable,
             )
             return True
+
+    def mark_failed_before_start(
+        self, document_id: UUID, failure: AnalysisFailure, completed_at: datetime
+    ) -> bool:
+        """시작 전에 실패한 문서의 최신 분석이 PENDING이면 문서와 분석을 FAILED로 기록한다.
+
+        이미 다른 상태면 다른 실행이 맡았거나 끝난 분석이므로 아무것도 바꾸지 않고 False를 반환한다.
+        이번 실행이 만든 페이지와 항목이 없으므로 둘은 건드리지 않는다.
+        """
+        with self._session_factory.begin() as session:
+            # 최신 분석을 고르는 기준은 find_target과 같다.
+            analysis = session.execute(
+                select(DocumentAnalysisModel.id, DocumentAnalysisModel.status)
+                .where(DocumentAnalysisModel.document_id == document_id)
+                .order_by(DocumentAnalysisModel.created_at.desc(), DocumentAnalysisModel.id.desc())
+                .limit(1)
+                .with_for_update()
+            ).one_or_none()
+            if analysis is None or analysis.status != AnalysisStatus.PENDING:
+                return False
+            # 그 사이 삭제된 문서는 덮어쓰지 않는다. _update_document와 같은 조건이다.
+            document = session.execute(
+                update(DocumentModel)
+                .where(DocumentModel.id == document_id, *_NOT_DELETED)
+                .values(
+                    status=DocumentStatus.FAILED,
+                    status_changed_at=completed_at,
+                    updated_at=completed_at,
+                )
+            )
+            if document.rowcount != 1:
+                return False
+            session.execute(
+                update(DocumentAnalysisModel)
+                .where(DocumentAnalysisModel.id == analysis.id)
+                .values(
+                    status=AnalysisStatus.FAILED,
+                    completed_at=completed_at,
+                    error_code=failure.error_code,
+                    failed_step=failure.failed_step,
+                    error_message=failure.detail_code,
+                    retryable=failure.retryable,
+                )
+            )
+            return True
+
+
+def _lock_own_run(session: Session, target: AnalysisTarget, started_at: datetime) -> bool:
+    # 잠근 채로 확인해야 그사이 만료 재시작(mark_started)이 끼어들지 못한다.
+    owned = session.execute(
+        select(DocumentAnalysisModel.id)
+        .where(
+            DocumentAnalysisModel.id == target.analysis_id,
+            DocumentAnalysisModel.status == AnalysisStatus.RUNNING,
+            DocumentAnalysisModel.started_at == started_at,
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if owned is None:
+        logger.info(
+            "다른 실행이 맡은 분석이라 저장하지 않습니다: document_id=%s, analysis_id=%s",
+            target.document_id,
+            target.analysis_id,
+        )
+        return False
+    return True
 
 
 def _update_document(
