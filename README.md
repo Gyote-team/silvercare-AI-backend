@@ -274,6 +274,13 @@ Redis queue에서 AI job을 받아 실행하는 비동기 worker 코드를 배�
 queue message에는 의료 문서 원문이나 음성 내용을 넣지 않고 `jobId`, `requestId`,
 object key 같은 최소 식별자만 넣습니다.
 
+현재 문서 분석은 Redis queue 대신 프로세스 안의 `ThreadPoolExecutor`로 실행합니다.
+Redis queue worker는 후속 작업입니다.
+
+문서 분석이 만료(`DOCUMENT_ANALYSIS_STALE_MINUTES`) 전에 프로세스와 함께 죽으면 그 분석은
+RUNNING으로 남습니다. 서버가 다시 시작되면 만료가 지난 RUNNING과 오래된 PENDING을 자동으로
+다시 실행합니다(`DOCUMENT_ANALYSIS_RESUME_ON_STARTUP`).
+
 ## `app/shared`
 
 여러 계층에서 사용하는 작은 순수 유틸리티를 배치합니다. UUID, 시간, 해시, 텍스트
@@ -375,8 +382,10 @@ Windows PowerShell 기준입니다. 저장소 루트에서 실행합니다.
 5. 서버 실행
 
    ```powershell
-   python -m uvicorn app.main:app --reload --port 8000
+   python -m uvicorn app.main:app --reload --port 8000 --http h11
    ```
+
+   `--http h11`은 Spring Java HttpClient가 보내는 HTTP/2 업그레이드 헤더를 기본 HTTP 해석기가 처리하지 못해 400을 내는 문제를 피하려고 붙입니다.
 
    <http://localhost:8000/health> 에서 `{"status": "ok"}`가 보이면 정상입니다. /health는 서버가 응답하는지만 확인하며, DB 연결이나 내부 토큰 설정을 검증하지 않습니다.
 

@@ -36,6 +36,17 @@ def db_session() -> Iterator[Session]:
 @pytest.fixture
 def document_id(db_session: Session) -> UUID:
     """FK를 채우려고 users, patients, visits, documents 행을 하나씩 만든다."""
+    return insert_document(db_session)
+
+
+@pytest.fixture
+def analysis_id(db_session: Session, document_id: UUID) -> UUID:
+    """Spring이 업로드할 때 만드는 PENDING 분석 작업 행을 하나 만든다."""
+    return insert_analysis(db_session, document_id)
+
+
+def insert_document(db_session: Session) -> UUID:
+    """users, patients, visits, documents 행을 하나씩 넣고 문서 id를 반환한다."""
     user_id, patient_id, visit_id, document_id = uuid4(), uuid4(), uuid4(), uuid4()
     db_session.execute(
         # account_group_id는 NOT NULL이고 기본값이 없다. 자기 id를 넣는다.
@@ -74,9 +85,8 @@ def document_id(db_session: Session) -> UUID:
     return document_id
 
 
-@pytest.fixture
-def analysis_id(db_session: Session, document_id: UUID) -> UUID:
-    """Spring이 업로드할 때 만드는 PENDING 분석 작업 행을 하나 만든다."""
+def insert_analysis(db_session: Session, document_id: UUID) -> UUID:
+    """PENDING 분석 작업 행을 하나 넣고 id를 반환한다."""
     analysis_id = uuid4()
     db_session.execute(
         text(

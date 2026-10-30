@@ -151,6 +151,8 @@ class FakeRepository:
         self.started = started
         self.mark_failed_error = mark_failed_error
         self.calls: list[tuple] = []
+        self.started_at: datetime | None = None
+        self.started_at_mismatches: list[str] = []
 
     def find_target(self, document_id: UUID) -> AnalysisTarget | None:
         """호출을 기록하고 정해 둔 대상을 돌려준다."""
@@ -158,8 +160,9 @@ class FakeRepository:
         return self.target
 
     def mark_started(self, target: AnalysisTarget, started_at: datetime) -> bool:
-        """호출을 기록하고 정해 둔 시작 여부를 돌려준다."""
+        """호출과 시작 시각을 기록하고 정해 둔 시작 여부를 돌려준다."""
         self.calls.append(("mark_started", target))
+        self.started_at = started_at
         return self.started
 
     def save_rendered_pages(
@@ -171,21 +174,30 @@ class FakeRepository:
     def save_result(
         self,
         target: AnalysisTarget,
+        started_at: datetime,
         document_status: DocumentStatus,
         extractions_by_page_no: Mapping[int, PageExtraction],
         model_version: str | None,
         completed_at: datetime,
     ) -> bool:
-        """받은 상태, 페이지별 추출 결과, 모델 이름을 기록한다."""
+        """받은 상태, 페이지별 추출 결과, 모델 이름을 기록한다. 시작 시각이 다르면 따로 기록한다."""
+        if started_at != self.started_at:
+            self.started_at_mismatches.append("save_result")
         self.calls.append(
             ("save_result", document_status, dict(extractions_by_page_no), model_version)
         )
         return True
 
     def mark_failed(
-        self, target: AnalysisTarget, failure: AnalysisFailure, completed_at: datetime
+        self,
+        target: AnalysisTarget,
+        started_at: datetime,
+        failure: AnalysisFailure,
+        completed_at: datetime,
     ) -> bool:
-        """받은 실패 기록을 기록한다. 정해 둔 예외가 있으면 던진다."""
+        """실패 기록을 남긴다. 시작 시각이 다르면 따로 남기고, 정해 둔 예외가 있으면 던진다."""
+        if started_at != self.started_at:
+            self.started_at_mismatches.append("mark_failed")
         if self.mark_failed_error is not None:
             raise self.mark_failed_error
         self.calls.append(("mark_failed", failure))
@@ -203,18 +215,24 @@ def run(
     writer: FakeWriter | None = None,
     extractor: FakeExtractor | None = None,
 ) -> DocumentAnalysisResult:
-    """가짜 포트로 유스케이스를 실행한다. 넘기지 않은 포트는 성공하는 가짜를 쓴다."""
-    return analyze_document(
-        DOCUMENT_ID,
-        reader=reader or FakeReader(),
-        writer=writer or FakeWriter(),
-        repository=repository,
-        page_repository=repository,
-        extractor=extractor or FakeExtractor(),
-        render_dpi=72,
-        max_pages=5,
-        max_page_side_px=2048,
-    )
+    """가짜 포트로 유스케이스를 실행한다. 넘기지 않은 포트는 성공하는 가짜를 쓴다.
+
+    예외로 끝나도 결과 저장에 시작 시각을 그대로 넘겼는지 확인한다.
+    """
+    try:
+        return analyze_document(
+            DOCUMENT_ID,
+            reader=reader or FakeReader(),
+            writer=writer or FakeWriter(),
+            repository=repository,
+            page_repository=repository,
+            extractor=extractor or FakeExtractor(),
+            render_dpi=72,
+            max_pages=5,
+            max_page_side_px=2048,
+        )
+    finally:
+        assert repository.started_at_mismatches == []
 
 
 def extraction_error(code: PageExtractionErrorCode) -> PageExtractionError:
