@@ -109,3 +109,22 @@ def test_repeated_worker_crash_is_terminal_failure(queue):
         row = db.execute(text("SELECT status,error_code FROM voice_transcriptions")).one()
         assert row.status == "FAILED"
         assert row.error_code == "WORKER_TIMEOUT"
+
+
+def test_configured_lease_keeps_recent_job_and_recovers_only_after_expiry(queue):
+    _, engine = queue
+    repo = VoiceJobRepository(engine, lease_seconds=60)
+    identifier = add(engine)
+    original = repo.claim()
+    with engine.begin() as db:
+        db.execute(text("UPDATE voice_transcriptions SET updated_at=:past WHERE id=:id"),
+                   {"past": datetime.now(UTC) - timedelta(seconds=30), "id": identifier})
+    assert repo.claim() is None
+    with engine.begin() as db:
+        db.execute(text("UPDATE voice_transcriptions SET updated_at=:past WHERE id=:id"),
+                   {"past": datetime.now(UTC) - timedelta(seconds=61), "id": identifier})
+    recovered = repo.claim()
+    assert recovered.id == original.id
+    assert recovered.lease != original.lease
+    assert not repo.complete(original, "expired result", None)
+    assert repo.complete(recovered, "new result", None)

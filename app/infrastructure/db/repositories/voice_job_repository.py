@@ -11,13 +11,14 @@ from app.application.ports.voice_job_queue import VoiceJob
 class VoiceJobRepository:
     """외부 API 호출 동안 DB 잠금을 유지하지 않는 영속 큐."""
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, lease_seconds: int = 600) -> None:
         self.engine = engine
+        self.lease_seconds = lease_seconds
 
     def claim(self) -> VoiceJob | None:
         """중복 작업자를 건너뛰고 재시작으로 남은 작업은 최대 세 번 복구한다."""
         now = datetime.now(UTC)
-        cutoff = now - timedelta(minutes=10)
+        cutoff = now - timedelta(seconds=self.lease_seconds)
         with self.engine.begin() as db:
             db.execute(text("""
                 UPDATE voice_transcriptions SET status='FAILED',error_code='WORKER_TIMEOUT',

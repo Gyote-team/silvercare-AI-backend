@@ -56,12 +56,16 @@ def test_worker_rejects_changed_original(voice, tmp_path):
     assert jobs.complete.call_args.args[2] == "AUDIO_INVALID"
 
 
-def test_failure_has_safe_code_not_provider_message(voice, tmp_path):
+def test_failure_has_safe_code_not_provider_message(voice, tmp_path, caplog):
     jobs, provider = Mock(), Mock()
     jobs.claim.return_value = voice
     provider.transcribe.side_effect = RuntimeError("private provider content")
-    TranscribeVoiceUseCase(jobs, provider, str(tmp_path)).run_once()
+    with caplog.at_level("INFO"):
+        TranscribeVoiceUseCase(jobs, provider, str(tmp_path)).run_once()
     jobs.complete.assert_called_once_with(voice, None, "STT_UNAVAILABLE")
+    assert str(voice.id) in caplog.text
+    assert "STT_UNAVAILABLE" in caplog.text
+    assert "private provider content" not in caplog.text
 
 
 def test_no_job_does_not_call_provider(tmp_path):
@@ -85,7 +89,7 @@ def test_provider_requires_key():
 
 
 @pytest.mark.parametrize(
-    "content,code", [("   ", "NO_SPEECH"), ("가" * 20001, "TRANSCRIPT_TOO_LONG")],
+    "content,code", [("   ", "NO_SPEECH"), ("가" * 100001, "TRANSCRIPT_TOO_LONG")],
     ids=["empty-speech", "too-long"],
 )
 def test_provider_does_not_invent_or_truncate_text(tmp_path, content, code):

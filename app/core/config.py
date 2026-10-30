@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     stt_base_url: str = "https://api.openai.com/v1"
     stt_model: str = "gpt-transcribe"
     stt_timeout_seconds: float = Field(default=180, gt=0, le=300)
+    stt_lease_seconds: int = Field(default=600, gt=0)
+    stt_db_retry_seconds: float = Field(default=5, gt=0, le=60)
+    stt_max_transcript_chars: int = Field(default=100000, gt=0, le=1000000)
     openai_vlm_model: str = Field(default="gpt-5.6-sol", min_length=1)
     openai_vlm_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "high"
     openai_vlm_max_output_tokens: int = Field(default=16000, gt=0)
@@ -46,6 +49,13 @@ class Settings(BaseSettings):
     openai_vlm_connect_timeout_seconds: float = Field(default=10, gt=0)
     openai_vlm_max_retries: int = Field(default=2, ge=0)
     openai_vlm_retry_backoff_seconds: float = Field(default=1.0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_stt_lease(self):
+        """전사 전체 제한 시간과 자식 종료 여유보다 임대가 짧으면 기동을 거절한다."""
+        if self.stt_lease_seconds <= self.stt_timeout_seconds + 30:
+            raise ValueError("STT_LEASE_SECONDS must exceed STT_TIMEOUT_SECONDS + 30")
+        return self
 
 
 @lru_cache
