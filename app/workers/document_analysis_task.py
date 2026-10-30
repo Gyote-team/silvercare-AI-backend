@@ -3,12 +3,13 @@
 import logging
 import os
 import traceback
+from concurrent.futures import Executor
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.application.services.retrying_page_extractor import RetryingPageExtractor
 from app.application.use_cases.analyze_document import analyze_document
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.domain.document.document_analysis import AnalysisFailure
 from app.domain.operation.error_code import AnalysisErrorCode, FailedStep
 from app.infrastructure.db.repositories.document_analysis_repository import (
@@ -34,21 +35,22 @@ _SETUP_FAILURE = AnalysisFailure(
 
 
 def run_document_analysis(
-    document_id: UUID, request_id: str, object_key: str, mime_type: str
+    document_id: UUID,
+    request_id: str | None,
+    object_key: str | None = None,
+    mime_type: str | None = None,
 ) -> None:
     """문서 하나를 분석한다. 실패해도 예외를 밖으로 던지지 않고 로그만 남긴다.
 
     object_key·mime_type은 DB 값과 비교해 로그만 남기고, 분석에는 DB 값을 쓴다.
+    서버 시작 때 다시 실행하는 경우에는 요청 값이 없어 모두 None이다.
     """
     repository: SqlAlchemyDocumentAnalysisRepository | None = None
     inner: OpenAIPageExtractor | None = None
     try:
         settings = get_settings()
         storage = LocalDocumentStorage(settings.storage_local_root)
-        repository = SqlAlchemyDocumentAnalysisRepository(
-            get_session_factory(),
-            stale_after=timedelta(minutes=settings.document_analysis_stale_minutes),
-        )
+        repository = _create_repository(settings)
         _warn_if_request_differs(repository, document_id, request_id, object_key, mime_type)
         inner = create_page_extractor(settings)
         extractor = RetryingPageExtractor(
@@ -94,13 +96,40 @@ def run_document_analysis(
             _close_extractor(inner, document_id)
 
 
+def resume_unfinished_analyses(executor: Executor) -> None:
+    """프로세스와 함께 멈춘 분석(오래된 PENDING, 만료된 RUNNING)을 executor에 다시 넣는다."""
+    try:
+        settings = get_settings()
+        document_ids = _create_repository(settings).find_resumable_document_ids(
+            datetime.now(UTC),
+            pending_after=timedelta(minutes=settings.document_analysis_resume_pending_minutes),
+            limit=settings.document_analysis_resume_limit,
+        )
+        for document_id in document_ids:
+            executor.submit(run_document_analysis, document_id, None)
+    except Exception as error:
+        # 서버 시작 때 executor에서 도는 작업이라 예외를 받을 곳이 없으므로 로그만 남긴다.
+        logger.error("남은 문서 분석 재실행 실패: error=%s", type(error).__name__)
+        return
+    logger.info("남은 문서 분석 재실행: count=%s", len(document_ids))
+
+
+def _create_repository(settings: Settings) -> SqlAlchemyDocumentAnalysisRepository:
+    return SqlAlchemyDocumentAnalysisRepository(
+        get_session_factory(),
+        stale_after=timedelta(minutes=settings.document_analysis_stale_minutes),
+    )
+
+
 def _warn_if_request_differs(
     repository: SqlAlchemyDocumentAnalysisRepository,
     document_id: UUID,
-    request_id: str,
-    object_key: str,
-    mime_type: str,
+    request_id: str | None,
+    object_key: str | None,
+    mime_type: str | None,
 ) -> None:
+    if object_key is None or mime_type is None:
+        return
     target = repository.find_target(document_id)
     if target is None:
         return
@@ -123,7 +152,7 @@ def _warn_if_request_differs(
 
 
 def _record_setup_failure(
-    repository: SqlAlchemyDocumentAnalysisRepository, document_id: UUID, request_id: str
+    repository: SqlAlchemyDocumentAnalysisRepository, document_id: UUID, request_id: str | None
 ) -> None:
     # 분석이 이미 RUNNING·FAILED로 바뀌었으면 PENDING 조건 때문에 아무것도 바꾸지 않는다.
     # 그래서 analyze_document가 실패를 기록한 뒤 다시 올린 예외에도 그대로 불러도 된다.

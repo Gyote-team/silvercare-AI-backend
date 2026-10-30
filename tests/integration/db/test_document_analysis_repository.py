@@ -654,6 +654,104 @@ def test_mark_failed_before_start_leaves_started_analysis(
     assert snapshot(db_session, target) == before
 
 
+RESUME_NOW = datetime(2026, 10, 2, 9, 0, tzinfo=UTC)
+PENDING_AFTER = timedelta(minutes=10)
+LONG_AGO = RESUME_NOW - timedelta(hours=2)
+
+
+def add_analysis(
+    db_session: Session,
+    document_id: UUID,
+    status: AnalysisStatus,
+    created_at: datetime,
+    started_at: datetime | None = None,
+) -> None:
+    """정한 상태와 시각으로 분석 행을 하나 넣는다. 끝난 분석은 시작 1분 뒤 끝난 것으로 둔다."""
+    analysis_id = insert_analysis(db_session, document_id)
+    finished = status in (AnalysisStatus.SUCCEEDED, AnalysisStatus.FAILED)
+    db_session.execute(
+        text(
+            "UPDATE document_analyses SET status = :status, created_at = :created_at,"
+            " started_at = :started_at, completed_at = :completed_at WHERE id = :id"
+        ),
+        {
+            "id": analysis_id,
+            "status": status,
+            "created_at": created_at,
+            "started_at": started_at,
+            "completed_at": started_at + timedelta(minutes=1) if finished and started_at else None,
+        },
+    )
+
+
+def new_document_with(
+    db_session: Session,
+    status: AnalysisStatus,
+    created_at: datetime,
+    started_at: datetime | None = None,
+) -> UUID:
+    """분석 행 하나를 가진 문서를 만들고 문서 id를 반환한다."""
+    document_id = insert_document(db_session)
+    add_analysis(db_session, document_id, status, created_at, started_at)
+    return document_id
+
+
+def test_find_resumable_includes_old_pending_and_stale_running(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository
+) -> None:
+    """오래된 PENDING, 만료된 RUNNING, 시작 시각 없는 RUNNING을 고른다. 경계는 포함한다."""
+    old_pending = new_document_with(
+        db_session, AnalysisStatus.PENDING, RESUME_NOW - PENDING_AFTER
+    )
+    stale_running = new_document_with(
+        db_session, AnalysisStatus.RUNNING, LONG_AGO, RESUME_NOW - STALE_AFTER
+    )
+    running_without_start = new_document_with(db_session, AnalysisStatus.RUNNING, LONG_AGO)
+
+    # 개발 DB의 다른 행이 섞이므로 포함 여부로만 확인하고 limit은 넉넉히 준다.
+    found = repository.find_resumable_document_ids(
+        RESUME_NOW, pending_after=PENDING_AFTER, limit=10_000
+    )
+
+    assert {old_pending, stale_running, running_without_start} <= set(found)
+
+
+def test_find_resumable_excludes_recent_finished_deleted_and_older_rows(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository
+) -> None:
+    """최근 PENDING, 실행 중 RUNNING, 끝난 분석, 삭제 문서, 최신이 아닌 분석 행은 고르지 않는다."""
+    recent_pending = new_document_with(
+        db_session, AnalysisStatus.PENDING, RESUME_NOW - PENDING_AFTER + timedelta(minutes=1)
+    )
+    running = new_document_with(
+        db_session,
+        AnalysisStatus.RUNNING,
+        LONG_AGO,
+        RESUME_NOW - STALE_AFTER + timedelta(minutes=1),
+    )
+    succeeded = new_document_with(db_session, AnalysisStatus.SUCCEEDED, LONG_AGO, LONG_AGO)
+    failed = new_document_with(db_session, AnalysisStatus.FAILED, LONG_AGO, LONG_AGO)
+    deleted = new_document_with(db_session, AnalysisStatus.PENDING, LONG_AGO)
+    db_session.execute(
+        text("UPDATE documents SET status = 'DELETED' WHERE id = :id"), {"id": deleted}
+    )
+    # 오래된 PENDING 위에 더 새로운 SUCCEEDED가 있으면 최신만 본다.
+    superseded = new_document_with(db_session, AnalysisStatus.PENDING, LONG_AGO)
+    add_analysis(
+        db_session,
+        superseded,
+        AnalysisStatus.SUCCEEDED,
+        LONG_AGO + timedelta(minutes=30),
+        LONG_AGO + timedelta(minutes=30),
+    )
+
+    found = repository.find_resumable_document_ids(
+        RESUME_NOW, pending_after=PENDING_AFTER, limit=10_000
+    )
+
+    assert {recent_pending, running, succeeded, failed, deleted, superseded}.isdisjoint(found)
+
+
 @pytest.fixture
 def committed_target(db_session: Session) -> Iterator[AnalysisTarget]:
     """다른 연결에서도 보이도록 commit한 문서와 PENDING 분석. 끝나면 직접 지운다.

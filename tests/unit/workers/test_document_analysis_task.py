@@ -24,10 +24,20 @@ class FakeRepository:
         self.target: AnalysisTarget | None = None
         self.before_start_failures: list[AnalysisFailure] = []
         self.before_start_error: Exception | None = None
+        self.resumable_ids: list[UUID] = []
+        self.resumable_error: Exception | None = None
 
     def find_target(self, document_id: UUID) -> AnalysisTarget | None:
         """정해 둔 대상을 돌려준다."""
         return self.target
+
+    def find_resumable_document_ids(
+        self, now: datetime, *, pending_after: timedelta, limit: int
+    ) -> list[UUID]:
+        """정해 둔 id를 돌려준다. 정해 둔 예외가 있으면 던진다."""
+        if self.resumable_error is not None:
+            raise self.resumable_error
+        return self.resumable_ids
 
     def mark_failed_before_start(
         self, document_id: UUID, failure: AnalysisFailure, completed_at: datetime
@@ -160,6 +170,62 @@ def test_close_failure_is_logged_by_class_name(
     assert "추출기 닫기 실패" in caplog.text
     assert "OSError" in caplog.text
     assert _OBJECT_KEY not in caplog.text
+
+
+class FakeExecutor:
+    """제출한 함수와 인자만 기록하는 가짜 실행기."""
+
+    def __init__(self) -> None:
+        self.submitted: list[tuple[object, ...]] = []
+
+    def submit(self, fn: object, *args: object) -> None:
+        """실행하지 않고 기록만 한다."""
+        self.submitted.append((fn, *args))
+
+
+def test_resume_submits_each_document_once(repository: FakeRepository) -> None:
+    """조회한 문서마다 요청 값 없이 분석을 한 번씩 제출한다."""
+    first, second = uuid4(), uuid4()
+    repository.resumable_ids = [first, second]
+    executor = FakeExecutor()
+
+    document_analysis_task.resume_unfinished_analyses(executor)
+
+    run = document_analysis_task.run_document_analysis
+    assert executor.submitted == [(run, first, None), (run, second, None)]
+
+
+def test_resume_lookup_failure_is_logged_without_submit(
+    repository: FakeRepository, caplog: pytest.LogCaptureFixture
+) -> None:
+    """조회가 실패하면 제출하지 않고 클래스 이름만 로그로 남긴다."""
+    repository.resumable_error = ConnectionError(_OBJECT_KEY)
+    executor = FakeExecutor()
+
+    with caplog.at_level(logging.ERROR, logger=document_analysis_task.__name__):
+        document_analysis_task.resume_unfinished_analyses(executor)
+
+    assert executor.submitted == []
+    assert "ConnectionError" in caplog.text
+    assert _OBJECT_KEY not in caplog.text
+
+
+def test_resumed_run_does_not_compare_request_values(
+    repository: FakeRepository, caplog: pytest.LogCaptureFixture
+) -> None:
+    """재실행은 요청 값이 없으므로 대상이 있어도 비교 경고를 남기지 않는다."""
+    document_id = uuid4()
+    repository.target = AnalysisTarget(
+        document_id=document_id,
+        analysis_id=uuid4(),
+        storage_key="documents/synthetic-stored.pdf",
+        mime_type=_MIME_TYPE,
+    )
+
+    with caplog.at_level(logging.WARNING, logger=document_analysis_task.__name__):
+        document_analysis_task.run_document_analysis(document_id, None)
+
+    assert "요청 값이 DB와 다릅니다" not in caplog.text
 
 
 def test_request_differing_from_db_logs_field_names_only(

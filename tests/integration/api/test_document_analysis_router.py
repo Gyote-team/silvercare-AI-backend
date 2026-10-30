@@ -1,15 +1,18 @@
-"""문서 분석 요청 내부 API의 응답 코드와 백그라운드 등록을 검증한다."""
+"""문서 분석 요청 내부 API의 응답 코드와 분석 실행기 등록을 검증한다."""
 
+import threading
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.internal.v1 import document_analysis_router
 from app.core.config import Settings, get_settings
 from app.main import app
+from app.workers.document_analysis_task import run_document_analysis
 
 _REQUEST_ID = "req-test-1"
 _OBJECT_KEY = "documents/synthetic-test.pdf"
@@ -53,11 +56,15 @@ def _assert_error(response: httpx.Response, status_code: int, code: str) -> None
 
 @pytest.fixture
 def calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[object, ...]]:
-    """실제 분석 대신 호출 인자만 기록하는 가짜 실행 함수를 넣는다."""
+    """실제 분석 대신 제출 인자만 기록하는 가짜 실행기를 넣는다."""
     recorded: list[tuple[object, ...]] = []
-    monkeypatch.setattr(
-        document_analysis_router, "run_document_analysis", lambda *args: recorded.append(args)
-    )
+
+    class FakeExecutor:
+        def submit(self, fn: Callable[..., None], *args: object) -> None:
+            assert fn is run_document_analysis
+            recorded.append(args)
+
+    monkeypatch.setattr(app.state, "document_analysis_executor", FakeExecutor(), raising=False)
     return recorded
 
 
@@ -70,6 +77,31 @@ def test_valid_request_returns_202_and_schedules_analysis_once(calls, post) -> N
     assert response.status_code == 202
     assert response.content == b""
     assert calls == [(document_id, _REQUEST_ID, _OBJECT_KEY, _MIME_TYPE)]
+
+
+def test_requests_return_while_analysis_is_still_running(
+    monkeypatch: pytest.MonkeyPatch, post
+) -> None:
+    """분석이 실행기를 붙잡고 있어도 요청과 /health는 기다리지 않고 바로 응답한다."""
+    release = threading.Event()
+    executor = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(app.state, "document_analysis_executor", executor, raising=False)
+    monkeypatch.setattr(
+        "app.api.internal.v1.document_analysis_router.run_document_analysis",
+        lambda *args: release.wait(5),
+    )
+    try:
+        started = time.monotonic()
+        for _ in range(3):
+            document_id = uuid4()
+            assert post(document_id, _body(document_id)).status_code == 202
+        assert TestClient(app).get("/health").status_code == 200
+        # 응답이 분석(최대 5초 대기)을 기다렸다면 여기서 실패한다.
+        assert time.monotonic() - started < 2
+        assert release.is_set() is False
+    finally:
+        release.set()
+        executor.shutdown()
 
 
 def test_snake_case_body_is_accepted(calls, post) -> None:

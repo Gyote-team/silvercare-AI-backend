@@ -5,7 +5,8 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import and_, delete, insert, or_, select, update
+from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -264,6 +265,55 @@ class SqlAlchemyDocumentAnalysisRepository:
                 )
             )
             return True
+
+    def find_resumable_document_ids(
+        self, now: datetime, *, pending_after: timedelta, limit: int
+    ) -> list[UUID]:
+        """서버가 시작할 때 다시 실행할 문서 id를 오래된 분석부터 limit건 읽는다.
+
+        삭제되지 않은 문서의 최신 분석만 본다. pending_after보다 오래된 PENDING과,
+        시작 시각이 없거나 stale_after가 지난 RUNNING이 대상이다. 경계는 mark_started와 같다.
+        """
+        # 최신 분석을 고르는 기준은 find_target과 같다.
+        latest = (
+            select(
+                DocumentAnalysisModel.document_id,
+                DocumentAnalysisModel.status,
+                DocumentAnalysisModel.created_at,
+                DocumentAnalysisModel.started_at,
+            )
+            .ext(distinct_on(DocumentAnalysisModel.document_id))
+            .order_by(
+                DocumentAnalysisModel.document_id,
+                DocumentAnalysisModel.created_at.desc(),
+                DocumentAnalysisModel.id.desc(),
+            )
+            .subquery()
+        )
+        with self._session_factory() as session:
+            document_ids = session.execute(
+                select(latest.c.document_id)
+                .join(DocumentModel, DocumentModel.id == latest.c.document_id)
+                .where(
+                    *_NOT_DELETED,
+                    or_(
+                        and_(
+                            latest.c.status == AnalysisStatus.PENDING,
+                            latest.c.created_at <= now - pending_after,
+                        ),
+                        and_(
+                            latest.c.status == AnalysisStatus.RUNNING,
+                            or_(
+                                latest.c.started_at.is_(None),
+                                latest.c.started_at <= now - self._stale_after,
+                            ),
+                        ),
+                    ),
+                )
+                .order_by(latest.c.created_at)
+                .limit(limit)
+            ).scalars()
+            return list(document_ids)
 
 
 def _lock_own_run(session: Session, target: AnalysisTarget, started_at: datetime) -> bool:

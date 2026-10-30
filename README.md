@@ -274,8 +274,12 @@ Redis queue에서 AI job을 받아 실행하는 비동기 worker 코드를 배�
 queue message에는 의료 문서 원문이나 음성 내용을 넣지 않고 `jobId`, `requestId`,
 object key 같은 최소 식별자만 넣습니다.
 
+현재 문서 분석은 Redis queue 대신 프로세스 안의 `ThreadPoolExecutor`로 실행합니다.
+Redis queue worker는 후속 작업입니다.
+
 문서 분석이 만료(`DOCUMENT_ANALYSIS_STALE_MINUTES`) 전에 프로세스와 함께 죽으면 그 분석은
-RUNNING으로 남습니다. 만료 뒤 같은 문서로 분석 요청이 다시 와야 재시작됩니다.
+RUNNING으로 남습니다. 서버가 다시 시작되면 만료가 지난 RUNNING과 오래된 PENDING을 자동으로
+다시 실행합니다(`DOCUMENT_ANALYSIS_RESUME_ON_STARTUP`).
 
 ## `app/shared`
 
