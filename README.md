@@ -382,8 +382,10 @@ Windows PowerShell 기준입니다. 저장소 루트에서 실행합니다.
 5. 서버 실행
 
    ```powershell
-   python -m uvicorn app.main:app --reload --port 8000
+   python -m uvicorn app.main:app --reload --port 8000 --http h11
    ```
+
+   `--http h11`은 Spring Java HttpClient가 보내는 HTTP/2 업그레이드 헤더를 기본 HTTP 해석기가 처리하지 못해 400을 내는 문제를 피하려고 붙입니다.
 
    <http://localhost:8000/health> 에서 `{"status": "ok"}`가 보이면 정상입니다. /health는 서버가 응답하는지만 확인하며, DB 연결이나 내부 토큰 설정을 검증하지 않습니다.
 
