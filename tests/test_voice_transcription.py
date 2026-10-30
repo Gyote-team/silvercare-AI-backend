@@ -6,7 +6,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
 
+import httpx
 import pytest
+from openai import OpenAI
 
 from app.application.ports.speech_transcriber import SpeechFailure
 from app.application.ports.voice_job_queue import VoiceJob
@@ -92,10 +94,63 @@ def test_provider_does_not_invent_or_truncate_text(tmp_path, content, code):
         OpenAiSpeechTranscriber(settings(), client).transcribe(path)
 
 
-def test_provider_sends_file_and_korean_language(tmp_path):
+@pytest.mark.parametrize("model", ["gpt-transcribe", "gpt-4o-mini-transcribe"])
+def test_provider_sends_file_and_korean_language(tmp_path, model):
     path = tmp_path / "test.wav"
     path.write_bytes(b"test")
     client = Mock()
     client.audio.transcriptions.create.return_value = SimpleNamespace(text=" 인식 내용 ")
-    assert OpenAiSpeechTranscriber(settings(), client).transcribe(path) == "인식 내용"
-    assert client.audio.transcriptions.create.call_args.kwargs["language"] == "ko"
+    config = settings().model_copy(update={"stt_model": model})
+    assert OpenAiSpeechTranscriber(config, client).transcribe(path) == "인식 내용"
+    sent = client.audio.transcriptions.create.call_args.kwargs
+    assert sent["model"] == model
+    assert sent["response_format"] == "json"
+    if model == "gpt-transcribe":
+        assert sent["extra_body"] == {"languages": ["ko"]}
+        assert "language" not in sent
+    else:
+        assert sent["language"] == "ko"
+        assert "extra_body" not in sent
+
+
+@pytest.mark.parametrize("status,code", [
+    (200, None), (400, "AUDIO_INVALID"), (401, "STT_AUTH_FAILED"),
+    (403, "STT_AUTH_FAILED"), (413, "AUDIO_TOO_LARGE"),
+    (429, "STT_RATE_LIMIT"), (500, "STT_UNAVAILABLE"),
+])
+def test_real_sdk_request_and_response_without_network(tmp_path, status, code):
+    """실제 SDK의 multipart 직렬화·응답 파싱·오류 변환을 외부 연결 없이 검증한다."""
+    path = tmp_path / "sample.wav"
+    audio = b"RIFF" + b"\x00" * 40
+    path.write_bytes(audio)
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        assert request.method == "POST"
+        assert str(request.url) == "https://api.openai.com/v1/audio/transcriptions"
+        assert request.headers["authorization"] == "Bearer test-only-not-a-real-key"
+        assert "multipart/form-data" in request.headers["content-type"]
+        body = request.read()
+        assert b'gpt-transcribe' in body
+        assert b'name="languages[]"' in body
+        assert b'ko' in body
+        assert audio in body
+        if status == 200:
+            return httpx.Response(status, json={"text": " 한국어 전사 초안 ",
+                                               "languages": [{"code": "ko"}]})
+        return httpx.Response(status, json={"error": {"message": "private provider detail",
+                                                       "type": "test_error"}})
+
+    http = httpx.Client(transport=httpx.MockTransport(respond))
+    client = OpenAI(api_key="test-only-not-a-real-key", http_client=http, max_retries=0)
+    provider = OpenAiSpeechTranscriber(settings(), client)
+    try:
+        if code:
+            with pytest.raises(SpeechFailure, match=code):
+                provider.transcribe(path)
+        else:
+            assert provider.transcribe(path) == "한국어 전사 초안"
+        assert len(requests) == 1
+    finally:
+        provider.close()

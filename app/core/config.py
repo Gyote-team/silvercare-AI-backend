@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     stt_api_key: SecretStr | None = None
     stt_base_url: str = "https://api.openai.com/v1"
-    stt_model: str = "gpt-4o-mini-transcribe"
+    stt_model: str = "gpt-transcribe"
     stt_timeout_seconds: float = Field(default=180, gt=0, le=300)
     openai_vlm_model: str = Field(default="gpt-5.6-sol", min_length=1)
     openai_vlm_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "high"

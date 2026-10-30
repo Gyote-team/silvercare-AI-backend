@@ -26,10 +26,14 @@ class OpenAiSpeechTranscriber:
 
     def transcribe(self, path: Path) -> str:
         """음성을 한국어 텍스트로 변환하고 빈 인식·과도한 길이는 실패로 처리한다."""
+        language_options = (
+            {"extra_body": {"languages": ["ko"]}}
+            if self.model == "gpt-transcribe" else {"language": "ko"}
+        )
         try:
             with path.open("rb") as audio:
                 result = self.client.audio.transcriptions.create(
-                    model=self.model, file=audio, language="ko", response_format="json"
+                    model=self.model, file=audio, response_format="json", **language_options
                 )
         except APITimeoutError:
             raise SpeechFailure("STT_TIMEOUT") from None
