@@ -38,3 +38,14 @@ Spring #12·#17이 업로드·권한·동의·상태·사용자 확정을 소유
 - `pytest tests/test_voice_transcription.py`: 공급자 어댑터와 파일 범위·해시·빈 인식·긴 인식 처리. 실제 OpenAI SDK와 `httpx.MockTransport`로 multipart의 모델·한국어 힌트·파일 전송, JSON 파싱, 400/401/403/413/429/500 오류 변환도 외부 네트워크 없이 검증한다.
 - `VOICE_TEST_DATABASE_URL`이 설정된 전용 silvercare_voice_verify_ DB에서 `pytest tests/integration/test_voice_postgres.py`: 선점, 단일 완료, 취소 뒤 결과 차단, 만료 lease 회수 및 복구 횟수 제한.
 - 실제 음성 인식 테스트는 STT 키와 비민감 테스트 음성으로 별도 수행해야 한다. 테스트 대역을 사용한 초안은 실제 전사 품질 검증이 아니다.
+
+## 문서 분석 API와 함께 실행
+
+최신 develop의 문서 분석 전용 실행기는 FastAPI 내부에서 동작하지만, 음성 작업자는 계속 별도 프로세스로 실행한다. 두 실행기는 같은 DB의 서로 다른 작업 테이블을 사용한다.
+
+- 문서 분석 API: `python -m uvicorn app.main:app --port 8000 --http h11` (develop README의 실행 방식)
+- 음성 작업자: `python -m app.workers.voice_worker`
+- 문서 분석 자동 복구 설정은 음성 큐의 임대 복구 설정을 바꾸지 않는다.
+- STT 회귀 테스트는 로컬 `.env`와 실제 API 키를 읽지 않는 테스트 설정을 사용한다.
+
+2026-10-30 실제 `gpt-transcribe`로 합성 한국어 음성을 변환하고, Spring·프론트에서 건강기록 및 방문 녹음 초안 수정·확정과 STT 유형 저장을 확인했다. 실제 사람의 마이크 녹음 품질 검증은 별도다.

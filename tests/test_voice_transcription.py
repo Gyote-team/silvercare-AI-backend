@@ -73,7 +73,10 @@ def test_no_job_does_not_call_provider(tmp_path):
 
 def settings():
     """테스트에서 외부 네트워크나 실제 키를 사용하지 않는다."""
-    return Settings(database_url="sqlite://", ai_internal_token="test", storage_local_root=".")
+    return Settings(
+        _env_file=None, database_url="sqlite://", ai_internal_token="test",
+        storage_local_root=".", stt_api_key=None, openai_api_key=None,
+    )
 
 
 def test_provider_requires_key():
