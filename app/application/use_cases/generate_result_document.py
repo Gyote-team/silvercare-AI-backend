@@ -65,7 +65,7 @@ class GenerateResultDocumentUseCase:
 
         try:
             generated = self._llm_client.generate_grounded_answer(
-                self._prompts.system(question_type), self._prompts.user(request, question_type)
+                self._prompts.system(question_type, request.detailed_document), self._prompts.user(request, question_type)
             )
             answer, usage = generated if isinstance(generated, tuple) else (generated, None)
         except AiResultGenerationError as error:

@@ -55,6 +55,7 @@ class GenerateResultDocumentRequest(BaseModel):
     allowed_document_ids: list[UUID] = Field(default_factory=list)
     allowed_health_record_ids: list[UUID] = Field(default_factory=list)
     evidence: list[EvidenceSource] = Field(default_factory=list, max_length=40)
+    detailed_document: bool = False
 
     @field_validator("question")
     @classmethod
