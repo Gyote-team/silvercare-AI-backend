@@ -1,6 +1,5 @@
-"""Gemini 등 OpenAI 호환 Chat Completions API adapter."""
+"""OpenAI Responses API를 사용하는 근거 기반 채팅 adapter."""
 
-import json
 from typing import Protocol
 
 from openai import (
@@ -26,7 +25,7 @@ class LlmClient(Protocol):
 
 
 class OpenAiCompatibleLlmClient:
-    """환경 변수로 받은 호환 endpoint에 요청한다."""
+    """채팅 전용 OpenAI 키로 구조화된 근거 기반 답변을 생성한다."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -47,19 +46,14 @@ class OpenAiCompatibleLlmClient:
                 AiResultErrorCode.AI_API_KEY_MISSING, retryable=False
             )
         try:
-            request_kwargs = {
-                "model": self._settings.llm_model,
-                "temperature": self._settings.llm_temperature,
-                "response_format": {"type": "json_object"},
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            }
-            # Gemini OpenAI 호환 API는 OpenAI 전용 reasoning_effort를 받지 않는다.
-            if self._settings.llm_provider != "gemini_openai_compatible":
-                request_kwargs["reasoning_effort"] = self._settings.llm_reasoning_effort
-            response = self._client.chat.completions.create(**request_kwargs)
+            response = self._client.responses.parse(
+                model=self._settings.llm_model,
+                instructions=system_prompt,
+                input=user_prompt,
+                reasoning={"effort": self._settings.llm_reasoning_effort},
+                text_format=GeneratedAnswer,
+                store=False,
+            )
         except APITimeoutError:
             raise AiResultGenerationError(AiResultErrorCode.AI_TIMEOUT, retryable=True) from None
         except RateLimitError:
@@ -80,14 +74,9 @@ class OpenAiCompatibleLlmClient:
             raise AiResultGenerationError(
                 AiResultErrorCode.AI_GENERATION_FAILED, retryable=True
             ) from None
-        content = response.choices[0].message.content
-        if not content:
+        answer = response.output_parsed
+        if answer is None:
             raise AiResultGenerationError(
                 AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True
             )
-        try:
-            return GeneratedAnswer.model_validate(json.loads(content))
-        except (json.JSONDecodeError, ValueError):
-            raise AiResultGenerationError(
-                AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True
-            ) from None
+        return answer

@@ -3,7 +3,8 @@
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic.alias_generators import to_camel
 
 
 class QuestionType(StrEnum):
@@ -23,6 +24,8 @@ class QuestionType(StrEnum):
 class EvidenceSource(BaseModel):
     """LLM에 전달할 수 있도록 권한이 검증된 원문 근거를 정규화한 값이다."""
 
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
     citation_id: UUID
     source_type: str = Field(pattern="^(DOCUMENT_CHUNK|EXTRACTED_ITEM|HEALTH_RECORD)$")
     document_id: UUID | None = None
@@ -38,6 +41,8 @@ class EvidenceSource(BaseModel):
 
 class GenerateResultDocumentRequest(BaseModel):
     """Spring이 권한 확인 뒤 AI 서버로 보내는 작업 요청이다."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
     request_id: UUID
     patient_id: UUID
@@ -66,7 +71,7 @@ class AnswerSentence(BaseModel):
 
 
 class GeneratedAnswer(BaseModel):
-    """Gemini가 반환해야 하는 제한된 JSON 형식이다."""
+    """GPT가 반환해야 하는 제한된 JSON 형식이다."""
 
     title: str = Field(min_length=1, max_length=200)
     answer: str = Field(min_length=1, max_length=12000)

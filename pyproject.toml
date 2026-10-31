@@ -16,7 +16,7 @@ dependencies = [
     "pymupdf>=1.24",             # PDF 페이지 분리와 렌더링
     "pillow>=10",                # 이미지 전처리
     "httpx>=0.27",               # Spring callback HTTP client, TestClient
-    "openai>=1.0",               # Gemini OpenAI 호환 API 클라이언트
+    "openai>=1.0",               # OpenAI Responses API 클라이언트
 ]
 
 [project.optional-dependencies]
