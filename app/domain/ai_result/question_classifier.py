@@ -8,10 +8,10 @@ class QuestionClassifier:
 
     def classify(self, question: str, hint: QuestionType | None) -> QuestionType:
         if hint and hint not in {QuestionType.MEDICAL_DECISION_REQUEST, QuestionType.UNSUPPORTED}:
-            return hint
+            return self.canonical(hint)
         text = question.lower()
         if any(word in text for word in ("지난", "이전", "비교", "달라", "변화")):
-            return QuestionType.LAB_RESULT_COMPARISON
+            return QuestionType.TEST_RESULT_COMPARISON
         if any(word in text for word in ("참고범위", "정상범위", "기준범위")):
             return QuestionType.LAB_REFERENCE_RANGE
         if any(word in text for word in ("약", "복용", "처방")):
@@ -23,3 +23,21 @@ class QuestionClassifier:
         if any(word in text for word in ("설명", "쉽게", "소견서", "진단서", "문서")):
             return QuestionType.DOCUMENT_EASY_EXPLANATION
         return QuestionType.UNSUPPORTED
+
+    @staticmethod
+    def canonical(question_type: QuestionType) -> QuestionType:
+        if question_type is QuestionType.LAB_RESULT_COMPARISON:
+            return QuestionType.TEST_RESULT_COMPARISON
+        return question_type
+
+    @staticmethod
+    def retrieval_strategy(question_type: QuestionType) -> str:
+        if question_type in {QuestionType.TEST_RESULT_COMPARISON, QuestionType.LAB_REFERENCE_RANGE}:
+            return "STRUCTURED_LAB"
+        if question_type is QuestionType.MEDICATION_SUMMARY:
+            return "STRUCTURED_MEDICATION"
+        if question_type is QuestionType.FOLLOW_UP_SCHEDULE:
+            return "STRUCTURED_SCHEDULE"
+        if question_type is QuestionType.SOURCE_LOOKUP:
+            return "SOURCE_LOOKUP"
+        return "STRUCTURED_EVIDENCE"

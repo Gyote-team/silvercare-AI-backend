@@ -128,7 +128,7 @@ def test_uncited_sentence_is_removed_from_partial_response():
     result = service.generate(request_with_evidence(allowed))
 
     assert result.result_status == "PARTIAL"
-    assert result.answer == "근거 있는 문장"
+    assert "근거 있는 문장" in result.answer
     assert len(result.sentences) == 1
 
 

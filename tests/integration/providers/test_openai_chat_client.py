@@ -37,15 +37,16 @@ def test_generate_grounded_answer_uses_responses_api(monkeypatch) -> None:
 
     def parse(**kwargs):
         captured.update(kwargs)
-        return SimpleNamespace(output_parsed=expected_answer)
+        return SimpleNamespace(output_parsed=expected_answer, usage=None)
 
     monkeypatch.setattr(client._client.responses, "parse", parse)
     try:
-        answer = client.generate_grounded_answer("시스템 지시", "사용자 질문")
+        answer, usage = client.generate_grounded_answer("시스템 지시", "사용자 질문")
     finally:
         client.close()
 
-    assert answer.sentences[0].citation_ids == [citation_id]
+    assert answer.sections[0].items[0].citation_ids == [citation_id]
+    assert usage.total_tokens == 0
     assert captured["model"] == "gpt-test"
     assert captured["instructions"] == "시스템 지시"
     assert captured["input"] == "사용자 질문"

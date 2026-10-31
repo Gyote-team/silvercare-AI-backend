@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from app.api.error_handlers import register_error_handlers
 from app.api.internal.v1.ai_result_document_router import router as ai_result_document_router
+from app.api.internal.v1.chat_classification_router import router as chat_classification_router
 from app.api.internal.v1.document_analysis_router import router as document_analysis_router
 from app.application.use_cases.generate_result_document import GenerateResultDocumentUseCase
 from app.core.config import get_settings
@@ -41,6 +42,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="SilverCare AI Backend", lifespan=lifespan)
 register_error_handlers(app)
 app.include_router(ai_result_document_router)
+app.include_router(chat_classification_router)
 app.include_router(document_analysis_router)
 
 

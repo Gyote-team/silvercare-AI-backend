@@ -12,7 +12,7 @@ from openai import (
     RateLimitError,
 )
 
-from app.contracts.ai_result_document import GeneratedAnswer
+from app.contracts.ai_result_document import GeneratedAnswer, LlmUsage
 from app.core.config import Settings
 from app.domain.ai_result.error import AiResultErrorCode, AiResultGenerationError
 
@@ -20,7 +20,9 @@ from app.domain.ai_result.error import AiResultErrorCode, AiResultGenerationErro
 class LlmClient(Protocol):
     """provider 교체를 위한 최소 인터페이스다."""
 
-    def generate_grounded_answer(self, system_prompt: str, user_prompt: str) -> GeneratedAnswer:
+    def generate_grounded_answer(
+        self, system_prompt: str, user_prompt: str
+    ) -> GeneratedAnswer | tuple[GeneratedAnswer, LlmUsage]:
         """근거가 있는 구조화 답변을 생성한다."""
 
 
@@ -40,7 +42,9 @@ class OpenAiCompatibleLlmClient:
         """앱 종료 시 연결 풀을 닫는다."""
         self._client.close()
 
-    def generate_grounded_answer(self, system_prompt: str, user_prompt: str) -> GeneratedAnswer:
+    def generate_grounded_answer(
+        self, system_prompt: str, user_prompt: str
+    ) -> tuple[GeneratedAnswer, LlmUsage]:
         if self._settings.llm_api_key is None:
             raise AiResultGenerationError(
                 AiResultErrorCode.AI_API_KEY_MISSING, retryable=False
@@ -79,4 +83,11 @@ class OpenAiCompatibleLlmClient:
             raise AiResultGenerationError(
                 AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True
             )
-        return answer
+        raw_usage = getattr(response, "usage", None)
+        usage = LlmUsage(
+            model=self._settings.llm_model,
+            input_tokens=getattr(raw_usage, "input_tokens", 0) or 0,
+            output_tokens=getattr(raw_usage, "output_tokens", 0) or 0,
+            total_tokens=getattr(raw_usage, "total_tokens", 0) or 0,
+        )
+        return answer, usage
