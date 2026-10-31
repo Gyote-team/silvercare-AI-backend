@@ -32,3 +32,15 @@ def generate(
 ) -> GenerateResultDocumentResponse:
     """근거가 검증된 상세 설명 또는 비교 문서를 생성한다."""
     return http_request.app.state.ai_result_document_use_case.generate(request)
+
+
+@router.post("/generate-detail", response_model=GenerateResultDocumentResponse)
+def generate_detail(
+    request: GenerateResultDocumentRequest,
+    _: Annotated[None, Depends(require_internal_token)],
+    http_request: Request,
+) -> GenerateResultDocumentResponse:
+    """사용자가 저장을 확정한 답변만 상세 문서로 확장한다."""
+    return http_request.app.state.ai_result_document_use_case.generate(
+        request.model_copy(update={"detailed_document": True})
+    )

@@ -1,13 +1,15 @@
 """근거 기반 상세 설명·비교 문서 생성 유스케이스다."""
 
-import json
-
 from app.contracts.ai_result_document import (
+    AnswerSection,
+    AnswerSentence,
     GeneratedAnswer,
     GenerateResultDocumentRequest,
     GenerateResultDocumentResponse,
     QuestionType,
 )
+from app.application.markdown_renderer import render_markdown
+from app.application.prompt_builder import PROMPT_VERSION, PromptBuilder
 from app.domain.ai_result.error import AiResultGenerationError
 from app.domain.ai_result.question_classifier import QuestionClassifier
 from app.domain.ai_result.safety_check import SafetyCheck
@@ -22,10 +24,12 @@ class GenerateResultDocumentUseCase:
         llm_client: LlmClient,
         safety_checks: SafetyCheck | None = None,
         classifier: QuestionClassifier | None = None,
+        prompt_builder: PromptBuilder | None = None,
     ) -> None:
         self._llm_client = llm_client
         self._safety_checks = safety_checks or SafetyCheck()
         self._classifier = classifier or QuestionClassifier()
+        self._prompts = prompt_builder or PromptBuilder()
 
     def generate(self, request: GenerateResultDocumentRequest) -> GenerateResultDocumentResponse:
         blocked_type = self._safety_checks.classify(request.question)
@@ -60,10 +64,10 @@ class GenerateResultDocumentUseCase:
             )
 
         try:
-            answer = self._llm_client.generate_grounded_answer(
-                self._system_prompt(question_type),
-                self._user_prompt(request, question_type),
+            generated = self._llm_client.generate_grounded_answer(
+                self._prompts.system(question_type, request.detailed_document), self._prompts.user(request, question_type)
             )
+            answer, usage = generated if isinstance(generated, tuple) else (generated, None)
         except AiResultGenerationError as error:
             return GenerateResultDocumentResponse(
                 request_id=request.request_id,
@@ -74,46 +78,31 @@ class GenerateResultDocumentUseCase:
                 retryable=error.retryable,
                 user_message=error.user_message(),
             )
-        return self._validated_response(request, question_type, answer)
-
-    @staticmethod
-    def _system_prompt(question_type: QuestionType) -> str:
-        return f"""당신은 SilverCare의 의료기록 설명 도우미입니다.
-질문 유형은 {question_type.value}입니다.
-제공된 근거에 없는 사실, 진단 확정, 약 변경·중단, 치료 결정을 절대 생성하지 마세요.
-수치·단위·날짜는 제공된 값 그대로 사용하세요.
-답변의 모든 문장은 citation_ids로 제공된 근거를 하나 이상 인용해야 합니다.
-반드시 title, answer, sentences 배열을 가진 JSON만 반환하세요.
-sentences 원소는 text와 citation_ids 배열을 가져야 합니다."""
-
-    @staticmethod
-    def _user_prompt(request: GenerateResultDocumentRequest, question_type: QuestionType) -> str:
-        evidence = [source.model_dump(mode="json") for source in request.evidence]
-        return json.dumps(
-            {
-                "question": request.question,
-                "questionType": question_type.value,
-                "evidence": evidence,
-                "instruction": (
-                    "근거를 충분히 활용해 상세하게 설명하되, 문서에 적힌 내용과 "
-                    "계산 가능한 비교만 다루세요."
-                ),
-            },
-            ensure_ascii=False,
-        )
+        return self._validated_response(request, question_type, answer, usage)
 
     @staticmethod
     def _validated_response(
         request: GenerateResultDocumentRequest,
         question_type: QuestionType,
         answer: GeneratedAnswer,
+        usage=None,
     ) -> GenerateResultDocumentResponse:
         allowed = {source.citation_id for source in request.evidence}
-        sentences = [
-            sentence
-            for sentence in answer.sentences
-            if sentence.citation_ids and set(sentence.citation_ids).issubset(allowed)
-        ]
+        sections: list[AnswerSection] = []
+        sentences: list[AnswerSentence] = []
+        original_count = 0
+        for section in answer.sections:
+            original_count += len(section.items)
+            valid_items = [
+                item for item in section.items
+                if item.citation_ids and set(item.citation_ids).issubset(allowed)
+            ]
+            if valid_items:
+                sections.append(AnswerSection(heading=section.heading, items=valid_items))
+                sentences.extend(
+                    AnswerSentence(text=item.text, citation_ids=item.citation_ids)
+                    for item in valid_items
+                )
         if not sentences:
             return GenerateResultDocumentResponse(
                 request_id=request.request_id,
@@ -122,13 +111,15 @@ sentences 원소는 text와 citation_ids 배열을 가져야 합니다."""
                 result_status="INSUFFICIENT",
                 user_message="생성된 답변에서 원문 근거를 확인하지 못했어요.",
             )
-        result_status = "COMPLETE" if len(sentences) == len(answer.sentences) else "PARTIAL"
+        result_status = "COMPLETE" if len(sentences) == original_count else "PARTIAL"
         return GenerateResultDocumentResponse(
             request_id=request.request_id,
             question_type=question_type,
             blocked=False,
             result_status=result_status,
             title=answer.title,
-            answer="\n\n".join(sentence.text for sentence in sentences),
+            answer=render_markdown(answer.title, answer.summary, sections),
+            prompt_version=PROMPT_VERSION,
             sentences=sentences,
+            usage=usage,
         )
