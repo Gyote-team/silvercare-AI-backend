@@ -35,7 +35,12 @@ class ClassifyQuestionUseCase:
         else:
             # 짧은 지시대명사 질문은 최근 대화의 마지막 사용자 질문과 함께 규칙을 한 번 더 적용한다.
             previous = next(
-                (m.content for m in reversed(request.conversation_context) if m.role == "USER"), None
+                (
+                    message.content
+                    for message in reversed(request.conversation_context)
+                    if message.role == "USER"
+                ),
+                None,
             )
             contextual = self._classifier.classify(f"{previous or ''} {request.question}", None)
             if contextual is not QuestionType.UNSUPPORTED:
@@ -48,7 +53,10 @@ class ClassifyQuestionUseCase:
                     classification_source="RULE",
                     retrieval_strategy="NONE",
                     needs_clarification=True,
-                    clarification_question="어떤 검사 결과나 문서 내용을 확인하고 싶은지 조금 더 구체적으로 알려 주세요.",
+                    clarification_question=(
+                        "어떤 검사 결과나 문서 내용을 확인하고 싶은지 "
+                        "조금 더 구체적으로 알려 주세요."
+                    ),
                 )
 
         return ClassifyQuestionResponse(

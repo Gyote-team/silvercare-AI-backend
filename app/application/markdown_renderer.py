@@ -12,7 +12,9 @@ def _safe(text: str) -> str:
 
 
 def render_markdown(title: str, summary: str, sections: list[AnswerSection]) -> str:
-    lines = [f"# {_safe(title)}", "", _safe(summary)]
+    lines = [f"# {_safe(title)}"]
+    if summary.strip():
+        lines.extend(["", _safe(summary)])
     for section in sections:
         lines.extend(["", f"## {_safe(section.heading)}", ""])
         for item in section.items:

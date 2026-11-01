@@ -1,5 +1,6 @@
 """Spring 내부 호출용 결과 문서 생성 API다."""
 
+from secrets import compare_digest
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Request
@@ -20,7 +21,8 @@ def require_internal_token(
     x_internal_token: Annotated[str | None, Header()] = None,
 ) -> None:
     """외부에서 AI 생성 endpoint를 직접 호출하지 못하게 한다."""
-    if not x_internal_token or x_internal_token != settings.ai_internal_token.get_secret_value():
+    expected = settings.ai_internal_token.get_secret_value()
+    if not x_internal_token or not compare_digest(x_internal_token, expected):
         raise ApiError(CommonErrorCode.UNAUTHORIZED)
 
 

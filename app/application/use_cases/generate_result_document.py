@@ -1,5 +1,7 @@
 """근거 기반 상세 설명·비교 문서 생성 유스케이스다."""
 
+from app.application.markdown_renderer import render_markdown
+from app.application.prompt_builder import PROMPT_VERSION, PromptBuilder
 from app.contracts.ai_result_document import (
     AnswerSection,
     AnswerSentence,
@@ -8,8 +10,6 @@ from app.contracts.ai_result_document import (
     GenerateResultDocumentResponse,
     QuestionType,
 )
-from app.application.markdown_renderer import render_markdown
-from app.application.prompt_builder import PROMPT_VERSION, PromptBuilder
 from app.domain.ai_result.error import AiResultGenerationError
 from app.domain.ai_result.question_classifier import QuestionClassifier
 from app.domain.ai_result.safety_check import SafetyCheck
@@ -65,7 +65,8 @@ class GenerateResultDocumentUseCase:
 
         try:
             generated = self._llm_client.generate_grounded_answer(
-                self._prompts.system(question_type, request.detailed_document), self._prompts.user(request, question_type)
+                self._prompts.system(question_type, request.detailed_document),
+                self._prompts.user(request, question_type),
             )
             answer, usage = generated if isinstance(generated, tuple) else (generated, None)
         except AiResultGenerationError as error:
@@ -90,11 +91,19 @@ class GenerateResultDocumentUseCase:
         allowed = {source.citation_id for source in request.evidence}
         sections: list[AnswerSection] = []
         sentences: list[AnswerSentence] = []
-        original_count = 0
+        summary_is_valid = bool(answer.summary_citation_ids) and set(
+            answer.summary_citation_ids
+        ).issubset(allowed)
+        original_count = 1
+        if summary_is_valid:
+            sentences.append(
+                AnswerSentence(text=answer.summary, citation_ids=answer.summary_citation_ids)
+            )
         for section in answer.sections:
             original_count += len(section.items)
             valid_items = [
-                item for item in section.items
+                item
+                for item in section.items
                 if item.citation_ids and set(item.citation_ids).issubset(allowed)
             ]
             if valid_items:
@@ -112,14 +121,17 @@ class GenerateResultDocumentUseCase:
                 user_message="생성된 답변에서 원문 근거를 확인하지 못했어요.",
             )
         result_status = "COMPLETE" if len(sentences) == original_count else "PARTIAL"
+        prompt_version = f"{PROMPT_VERSION}-detail" if request.detailed_document else PROMPT_VERSION
         return GenerateResultDocumentResponse(
             request_id=request.request_id,
             question_type=question_type,
             blocked=False,
             result_status=result_status,
             title=answer.title,
-            answer=render_markdown(answer.title, answer.summary, sections),
-            prompt_version=PROMPT_VERSION,
+            answer=render_markdown(
+                answer.title, answer.summary if summary_is_valid else "", sections
+            ),
+            prompt_version=prompt_version,
             sentences=sentences,
             usage=usage,
         )

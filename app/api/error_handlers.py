@@ -21,7 +21,9 @@ def register_error_handlers(app: FastAPI) -> None:
         return _error_response(error.status_code, error.code, error.message)
 
     @app.exception_handler(RequestValidationError)
-    async def handle_validation_error(request: Request, error: RequestValidationError) -> JSONResponse:
+    async def handle_validation_error(
+        request: Request, error: RequestValidationError
+    ) -> JSONResponse:
         """본문·경로·쿼리 검증 실패를 GLOBAL_002로 통일한다."""
         validation_errors = [
             {

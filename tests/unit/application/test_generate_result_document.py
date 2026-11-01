@@ -32,15 +32,18 @@ class FailingLlm:
 
 def request_with_evidence(citation_id):
     """원문 근거가 하나인 결과 문서 요청을 만든다."""
+    document_id = uuid4()
     return GenerateResultDocumentRequest(
         request_id=uuid4(),
         patient_id=uuid4(),
         actor_user_id=uuid4(),
         question="이 문서를 자세하게 쉽게 설명해 줘",
+        allowed_document_ids=[document_id],
         evidence=[
             EvidenceSource(
                 citation_id=citation_id,
                 source_type="DOCUMENT_CHUNK",
+                document_id=document_id,
                 source_text="HbA1c 6.5 %",
             )
         ],
@@ -92,7 +95,7 @@ def test_grounded_response_is_returned():
         FakeLlm(
             GeneratedAnswer(
                 title="문서 쉬운 설명",
-                answer="검사 결과에 HbA1c 6.5 %가 적혀 있습니다.",
+                answer="HbA1c 6.5 %가 적혀 있습니다.",
                 sentences=[
                     AnswerSentence(
                         text="HbA1c 6.5 %가 적혀 있습니다.",
@@ -160,3 +163,62 @@ def test_llm_timeout_is_returned_as_retryable_failed_result():
     assert result.error_code == "AI_TIMEOUT"
     assert result.retryable is True
     assert result.answer is None
+
+
+def test_uncited_summary_is_not_exposed():
+    """섹션 근거가 유효해도 citation 없는 요약은 사용자에게 노출하지 않는다."""
+    allowed = uuid4()
+    answer = GeneratedAnswer.model_validate(
+        {
+            "title": "검사 설명",
+            "summary": "근거 없이 생성된 요약",
+            "summary_citation_ids": [],
+            "sections": [
+                {
+                    "heading": "검사 결과",
+                    "items": [
+                        {
+                            "kind": "PARAGRAPH",
+                            "text": "HbA1c 6.5 %가 적혀 있습니다.",
+                            "citation_ids": [allowed],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    result = GenerateResultDocumentUseCase(FakeLlm(answer)).generate(request_with_evidence(allowed))
+
+    assert result.result_status == "PARTIAL"
+    assert "근거 없이 생성된 요약" not in result.answer
+    assert "HbA1c 6.5 %" in result.answer
+
+
+def test_detail_response_uses_detail_prompt_version():
+    """상세 문서 결과는 일반 답변과 구분되는 프롬프트 버전을 기록한다."""
+    allowed = uuid4()
+    request = request_with_evidence(allowed).model_copy(update={"detailed_document": True})
+    answer = GeneratedAnswer.model_validate(
+        {
+            "title": "상세 설명",
+            "summary": "HbA1c 결과 요약",
+            "summary_citation_ids": [allowed],
+            "sections": [
+                {
+                    "heading": "쉬운 설명",
+                    "items": [
+                        {
+                            "kind": "PARAGRAPH",
+                            "text": "HbA1c 6.5 %가 적혀 있습니다.",
+                            "citation_ids": [allowed],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    result = GenerateResultDocumentUseCase(FakeLlm(answer)).generate(request)
+
+    assert result.prompt_version == "chat-grounded-v2-detail"

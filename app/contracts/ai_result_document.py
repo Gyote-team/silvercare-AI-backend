@@ -30,6 +30,7 @@ class EvidenceSource(BaseModel):
 
     citation_id: UUID
     source_type: str = Field(pattern="^(DOCUMENT_CHUNK|EXTRACTED_ITEM|HEALTH_RECORD)$")
+    source_id: UUID | None = None
     document_id: UUID | None = None
     health_record_id: UUID | None = None
     page_no: int | None = Field(default=None, ge=1)
@@ -39,6 +40,21 @@ class EvidenceSource(BaseModel):
     unit: str | None = Field(default=None, max_length=50)
     reference_range: str | None = Field(default=None, max_length=200)
     recorded_at: str | None = Field(default=None, max_length=40)
+
+    @model_validator(mode="after")
+    def normalize_source_identifier(self):
+        """Spring의 공통 sourceId를 근거 유형별 식별자로 정규화한다."""
+        if self.source_type == "HEALTH_RECORD":
+            self.health_record_id = self.health_record_id or self.source_id
+            if self.health_record_id is None:
+                raise ValueError(
+                    "HEALTH_RECORD 근거에는 healthRecordId 또는 sourceId가 필요합니다."
+                )
+        else:
+            self.document_id = self.document_id or self.source_id
+            if self.document_id is None:
+                raise ValueError("문서 근거에는 documentId 또는 sourceId가 필요합니다.")
+        return self
 
 
 class GenerateResultDocumentRequest(BaseModel):
@@ -65,6 +81,19 @@ class GenerateResultDocumentRequest(BaseModel):
             raise ValueError("질문은 공백만으로 구성할 수 없습니다.")
         return normalized
 
+    @model_validator(mode="after")
+    def validate_evidence_scope(self):
+        """모든 근거가 Spring이 허용한 리소스 범위 안에 있는지 검증한다."""
+        allowed_documents = set(self.allowed_document_ids)
+        allowed_health_records = set(self.allowed_health_record_ids)
+        for source in self.evidence:
+            if source.source_type == "HEALTH_RECORD":
+                if source.health_record_id not in allowed_health_records:
+                    raise ValueError("허용 범위 밖의 건강기록 근거가 포함되어 있습니다.")
+            elif source.document_id not in allowed_documents:
+                raise ValueError("허용 범위 밖의 문서 근거가 포함되어 있습니다.")
+        return self
+
 
 class AnswerSentence(BaseModel):
     """화면에 노출 가능한 문장과 근거의 연결이다."""
@@ -89,6 +118,7 @@ class GeneratedAnswer(BaseModel):
 
     title: str = Field(min_length=1, max_length=200)
     summary: str = Field(min_length=1, max_length=2000)
+    summary_citation_ids: list[UUID] = Field(default_factory=list, max_length=8)
     sections: list[AnswerSection] = Field(min_length=1, max_length=8)
 
     @model_validator(mode="before")
@@ -97,14 +127,41 @@ class GeneratedAnswer(BaseModel):
         """기존 테스트 픽스처만 새 구조로 정규화하며 공개 스키마는 새 계약으로 유지한다."""
         if isinstance(value, dict) and "sections" not in value and "sentences" in value:
             sentences = value.get("sentences", [])
+            summary = value.get("answer", "답변")
+            matching_summary = next(
+                (
+                    item
+                    for item in sentences
+                    if (item.text if hasattr(item, "text") else item.get("text")) == summary
+                ),
+                None,
+            )
+            summary_citation_ids = (
+                matching_summary.citation_ids
+                if hasattr(matching_summary, "citation_ids")
+                else matching_summary.get("citation_ids", [])
+                if matching_summary
+                else []
+            )
             return {
                 "title": value.get("title", "답변"),
-                "summary": value.get("answer", "답변"),
-                "sections": [{"heading": "상세 내용", "items": [
-                    {"kind": "PARAGRAPH", "text": item.text if hasattr(item, "text") else item.get("text"),
-                     "citation_ids": item.citation_ids if hasattr(item, "citation_ids") else item.get("citation_ids", [])}
-                    for item in sentences
-                ]}],
+                "summary": summary,
+                "summary_citation_ids": summary_citation_ids,
+                "sections": [
+                    {
+                        "heading": "상세 내용",
+                        "items": [
+                            {
+                                "kind": "PARAGRAPH",
+                                "text": item.text if hasattr(item, "text") else item.get("text"),
+                                "citation_ids": item.citation_ids
+                                if hasattr(item, "citation_ids")
+                                else item.get("citation_ids", []),
+                            }
+                            for item in sentences
+                        ],
+                    }
+                ],
             }
         return value
 
