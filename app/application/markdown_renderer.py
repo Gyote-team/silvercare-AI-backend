@@ -6,7 +6,7 @@ from app.contracts.ai_result_document import AnswerSection
 
 
 def _safe(text: str) -> str:
-    text = re.sub(r"<[^>]*>", "", text)
+    text = re.sub(r"</?[a-zA-Z][^>]*>", "", text)
     text = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "", text)
     return text.strip()
 

@@ -23,6 +23,9 @@ def test_diagnosis_document_explanation_is_allowed(question: str) -> None:
         "이 증상으로 진단해 줘",
         "제 병명을 진단 내려 줘",
         "약을 끊어도 돼?",
+        "약을 그만 먹어도 돼?",
+        "복용을 중단해도 돼?",
+        "이 약은 안 먹어도 돼?",
         "치료 방법을 골라 줘",
     ],
 )

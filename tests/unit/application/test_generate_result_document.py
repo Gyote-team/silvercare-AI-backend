@@ -6,6 +6,7 @@ from app.contracts.ai_result_document import (
     EvidenceSource,
     GeneratedAnswer,
     GenerateResultDocumentRequest,
+    LlmUsage,
     QuestionType,
 )
 from app.domain.ai_result.error import AiResultErrorCode, AiResultGenerationError
@@ -28,6 +29,11 @@ class FailingLlm:
     def generate_grounded_answer(self, system_prompt: str, user_prompt: str) -> GeneratedAnswer:
         """AI 공급자 시간 초과를 흉내 낸다."""
         raise AiResultGenerationError(AiResultErrorCode.AI_TIMEOUT, retryable=True)
+
+
+class UsageLlm(FakeLlm):
+    def generate_grounded_answer(self, system_prompt: str, user_prompt: str):
+        return self.answer, LlmUsage(model="test", input_tokens=10, output_tokens=5, total_tokens=15)
 
 
 def request_with_evidence(citation_id):
@@ -86,6 +92,23 @@ def test_response_without_allowed_citation_is_not_exposed():
 
     assert result.result_status == "INSUFFICIENT"
     assert result.sentences == []
+
+
+def test_insufficient_response_preserves_usage_after_llm_call():
+    allowed = uuid4()
+    service = GenerateResultDocumentUseCase(
+        UsageLlm(GeneratedAnswer(
+            title="설명",
+            answer="근거 없는 답변",
+            sentences=[AnswerSentence(text="근거 없는 문장", citation_ids=[uuid4()])],
+        ))
+    )
+
+    result = service.generate(request_with_evidence(allowed))
+
+    assert result.result_status == "INSUFFICIENT"
+    assert result.usage is not None
+    assert result.usage.total_tokens == 15
 
 
 def test_grounded_response_is_returned():

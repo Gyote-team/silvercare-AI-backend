@@ -78,6 +78,11 @@ class OpenAiCompatibleLlmClient:
             raise AiResultGenerationError(
                 AiResultErrorCode.AI_GENERATION_FAILED, retryable=True
             ) from None
+        except ValueError:
+            # Provider 응답의 구조화 형식 오류에 원문이 예외 메시지로 남지 않게 한다.
+            raise AiResultGenerationError(
+                AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True
+            ) from None
         answer = response.output_parsed
         if answer is None:
             raise AiResultGenerationError(

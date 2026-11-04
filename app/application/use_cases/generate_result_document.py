@@ -118,6 +118,7 @@ class GenerateResultDocumentUseCase:
                 question_type=question_type,
                 blocked=False,
                 result_status="INSUFFICIENT",
+                usage=usage,
                 user_message="생성된 답변에서 원문 근거를 확인하지 못했어요.",
             )
         result_status = "COMPLETE" if len(sentences) == original_count else "PARTIAL"
