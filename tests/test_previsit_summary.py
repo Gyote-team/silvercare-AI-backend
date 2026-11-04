@@ -2,13 +2,13 @@
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from openai import OpenAI
+from openai import APIError, OpenAI
 from pydantic import SecretStr, ValidationError
 
 from app.application.use_cases.generate_previsit_summary import GeneratePrevisitSummaryUseCase
@@ -184,3 +184,129 @@ def test_internal_auth_and_missing_key_response() -> None:
         assert result.json()["errorCode"] == "AI_API_KEY_MISSING"
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    "phase,failure,code",
+    [
+        (
+            "create",
+            APIError(
+                "private-provider-secret",
+                request=httpx.Request("POST", "https://api.openai.com/v1/responses"),
+                body={"secret": "private-provider-secret"},
+            ),
+            "AI_UNAVAILABLE",
+        ),
+        ("constructor", ValueError("private-provider-secret"), "AI_RESPONSE_INVALID"),
+        ("create", TypeError("private-provider-secret"), "AI_RESPONSE_INVALID"),
+        ("create", RuntimeError("private-provider-secret"), "AI_UNAVAILABLE"),
+        ("close", RuntimeError("private-provider-secret"), "AI_UNAVAILABLE"),
+    ],
+)
+def test_provider_boundary_returns_safe_http_result_without_exception_text(
+    phase: str,
+    failure: Exception,
+    code: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """SDK·설정·직렬화·종료 오류가 500이나 원문 로그로 전파되지 않는다."""
+    config = settings().model_copy(
+        update={
+            "previsit_summary_api_key": SecretStr("local-test"),
+            "document_analysis_resume_on_startup": False,
+            "llm_api_key": None,
+        }
+    )
+    source = request()
+    client = MagicMock()
+    client.__enter__.return_value = client
+    factory = Mock(return_value=client)
+    if phase == "constructor":
+        factory.side_effect = failure
+    elif phase == "close":
+        client.responses.create.return_value = Mock(status="completed", output_text="{}")
+        client.__exit__.side_effect = failure
+    else:
+        client.responses.create.side_effect = failure
+    monkeypatch.setattr(
+        "app.infrastructure.providers.llm.openai_previsit_summarizer.OpenAI", factory
+    )
+    monkeypatch.setattr("app.main.get_settings", lambda: config)
+    app.dependency_overrides[get_settings] = lambda: config
+    try:
+        with TestClient(app, raise_server_exceptions=False) as http:
+            response = http.post(
+                "/internal/previsit-summaries/generate",
+                json=source.model_dump(mode="json"),
+                headers={"X-Internal-Token": "test"},
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["failed"] and body["errorCode"] == code
+        assert body["summary"] is None and body["usedHealthRecordIds"] == []
+        assert "private-provider-secret" not in response.text + caplog.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    "reason,code",
+    [
+        ("max_output_tokens", "AI_OUTPUT_LIMIT"),
+        ("content_filter", "AI_CONTENT_FILTERED"),
+        (None, "AI_RESPONSE_INVALID"),
+    ],
+)
+def test_actual_sdk_incomplete_response_keeps_reason_and_hides_partial_output(
+    reason: str | None,
+    code: str,
+) -> None:
+    """실제 SDK가 파싱한 미완료 응답을 구분하고 부분 JSON을 결과로 노출하지 않는다."""
+    calls = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append(req)
+        return httpx.Response(
+            200,
+            json={
+                "id": "incomplete-response",
+                "object": "response",
+                "created_at": 0,
+                "model": "gpt-5.6-sol",
+                "status": "incomplete",
+                "incomplete_details": {"reason": reason} if reason else None,
+                "output": [
+                    {
+                        "id": "partial-message",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "incomplete",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "private-partial-output",
+                                "annotations": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+    client = OpenAI(
+        api_key="local-test",
+        max_retries=0,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        result = GeneratePrevisitSummaryUseCase(
+            OpenAiPrevisitSummarizer(settings(), client)
+        ).execute(request())
+        assert result.failed and result.error_code == code and result.retryable is False
+        assert result.summary is None and result.used_health_record_ids == []
+        assert "private-partial-output" not in result.model_dump_json()
+        assert len(calls) == 1
+    finally:
+        client.close()

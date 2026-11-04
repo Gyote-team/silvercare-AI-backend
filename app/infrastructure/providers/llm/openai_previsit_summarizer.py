@@ -1,8 +1,9 @@
 """전용 키와 구조화 출력으로 건강기록 요약을 생성한다. 자동 재시도는 하지 않는다."""
 
 import json
+from contextlib import nullcontext
 
-from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, OpenAI
 from pydantic import ValidationError
 
 from app.application.ports.previsit_summarizer import PrevisitFailure
@@ -31,31 +32,43 @@ class OpenAiPrevisitSummarizer:
         key = self.settings.previsit_summary_api_key
         if self.client is None and (key is None or not key.get_secret_value().strip()):
             raise PrevisitFailure("AI_API_KEY_MISSING")
-        client = self.client or OpenAI(
-            api_key=key.get_secret_value(),
-            base_url=self.settings.previsit_summary_base_url,
-            timeout=self.settings.previsit_summary_timeout_seconds,
-            max_retries=0,
-        )
         try:
-            result = client.responses.create(
-                model=self.settings.previsit_summary_model,
-                instructions=INSTRUCTIONS,
-                input=json.dumps(
-                    request.model_dump(mode="json", by_alias=True), ensure_ascii=False
-                ),
-                text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": "previsit_summary",
-                        "strict": True,
-                        "schema": GeneratedPrevisitSummary.model_json_schema(),
-                    }
-                },
-                reasoning={"effort": "low"},
-                max_output_tokens=6000,
-                store=False,
+            # 설정·직렬화·클라이언트 종료도 같은 공급자 예외 경계 안에서 처리한다.
+            context = (
+                nullcontext(self.client)
+                if self.client is not None
+                else OpenAI(
+                    api_key=key.get_secret_value(),
+                    base_url=self.settings.previsit_summary_base_url,
+                    timeout=self.settings.previsit_summary_timeout_seconds,
+                    max_retries=0,
+                )
             )
+            with context as client:
+                result = client.responses.create(
+                    model=self.settings.previsit_summary_model,
+                    instructions=INSTRUCTIONS,
+                    input=json.dumps(
+                        request.model_dump(mode="json", by_alias=True), ensure_ascii=False
+                    ),
+                    text={
+                        "format": {
+                            "type": "json_schema",
+                            "name": "previsit_summary",
+                            "strict": True,
+                            "schema": GeneratedPrevisitSummary.model_json_schema(),
+                        }
+                    },
+                    reasoning={"effort": "low"},
+                    max_output_tokens=6000,
+                    store=False,
+                )
+            if result.status == "incomplete":
+                reason = getattr(result.incomplete_details, "reason", None)
+                if reason == "max_output_tokens":
+                    raise PrevisitFailure("AI_OUTPUT_LIMIT")
+                if reason == "content_filter":
+                    raise PrevisitFailure("AI_CONTENT_FILTERED")
             if result.status != "completed":
                 raise PrevisitFailure("AI_RESPONSE_INVALID")
             return GeneratedPrevisitSummary.model_validate_json(result.output_text)
@@ -69,8 +82,12 @@ class OpenAiPrevisitSummarizer:
             if error.status_code in (401, 403):
                 raise PrevisitFailure("AI_AUTH_FAILED") from None
             raise PrevisitFailure("AI_UNAVAILABLE", error.status_code >= 500) from None
-        except (ValidationError, ValueError):
+        except APIError:
+            raise PrevisitFailure("AI_UNAVAILABLE", True) from None
+        except (ValidationError, ValueError, TypeError):
             raise PrevisitFailure("AI_RESPONSE_INVALID") from None
-        finally:
-            if self.client is None:
-                client.close()
+        except PrevisitFailure:
+            raise
+        except Exception:
+            # 외부 SDK 경계에서 예상 밖 설정·처리 오류도 원문 없이 정규화한다.
+            raise PrevisitFailure("AI_UNAVAILABLE", True) from None
