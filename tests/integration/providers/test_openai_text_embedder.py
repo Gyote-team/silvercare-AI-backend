@@ -17,6 +17,7 @@ from app.core.config import Settings
 from app.infrastructure.providers.embedding.openai_text_embedder import (
     OpenAITextEmbedder,
     create_text_embedder,
+    has_embedding_api_key,
 )
 
 API_KEY = "sk-embedding-test-secret"
@@ -189,6 +190,45 @@ def test_wrong_dimension_is_rejected() -> None:
         make_embedder(Recorder(short)).embed([SOURCE_TEXT])
 
     assert raised.value.code == EmbeddingErrorCode.INVALID_RESPONSE
+
+
+def test_request_ignores_openai_base_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OPENAI_BASE_URL을 다른 주소로 넣어도 요청은 api.openai.com으로 간다."""
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://other.example.test/v1")
+    recorder = Recorder(embeddings_ok)
+
+    make_embedder(recorder).embed([SOURCE_TEXT])
+
+    assert str(recorder.requests[0].url) == "https://api.openai.com/v1/embeddings"
+
+
+def test_duplicate_index_is_rejected() -> None:
+    """index가 겹치면 개수가 맞아도 INVALID_RESPONSE다."""
+    vector = [0.1] * EMBEDDING_DIMENSIONS
+    duplicated = lambda request: httpx.Response(  # noqa: E731
+        200,
+        json={
+            "object": "list",
+            "data": [{"index": 0, "embedding": vector}, {"index": 0, "embedding": vector}],
+        },
+    )
+
+    with pytest.raises(EmbeddingError) as raised:
+        make_embedder(Recorder(duplicated)).embed(["a", "b"])
+
+    assert raised.value.code == EmbeddingErrorCode.INVALID_RESPONSE
+
+
+@pytest.mark.parametrize(("api_key", "expected"), [(None, False), ("  ", False), ("sk-x", True)])
+def test_has_embedding_api_key_ignores_blank(
+    test_settings: Settings, api_key: str | None, expected: bool
+) -> None:
+    """빈 값이나 공백 키는 키가 없는 것으로 본다."""
+    settings = test_settings.model_copy(
+        update={"embedding_api_key": SecretStr(api_key) if api_key is not None else None}
+    )
+
+    assert has_embedding_api_key(settings) is expected
 
 
 def test_missing_vector_is_rejected() -> None:

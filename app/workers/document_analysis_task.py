@@ -23,6 +23,7 @@ from app.infrastructure.db.session import get_session_factory
 from app.infrastructure.providers.embedding.openai_text_embedder import (
     OpenAITextEmbedder,
     create_text_embedder,
+    has_embedding_api_key,
 )
 from app.infrastructure.providers.llm.openai_page_extractor import (
     OpenAIPageExtractor,
@@ -160,6 +161,10 @@ def _resume_unindexed_documents(executor: Executor) -> None:
     # 분석 저장 직후 프로세스가 죽었거나 임베딩이 실패한 문서는 다른 재시도 경로가 없다.
     try:
         settings = get_settings()
+        if not has_embedding_api_key(settings):
+            # 키 없이 돌리면 문서마다 MISSING_API_KEY 오류만 쌓이므로 아예 넣지 않는다.
+            logger.info("EMBEDDING_API_KEY가 없어 남은 조각 색인 재실행을 건너뜁니다")
+            return
         document_ids = SqlAlchemyDocumentChunkRepository(
             get_session_factory()
         ).find_unindexed_document_ids(limit=settings.document_analysis_resume_limit)

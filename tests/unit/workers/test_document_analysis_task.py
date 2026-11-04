@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import SecretStr
 
 from app.application.ports.document_analysis_repository import AnalysisTarget
 from app.application.use_cases.analyze_document import DocumentAnalysisResult
@@ -78,7 +79,9 @@ class FakeExtractor:
 def repository(monkeypatch: pytest.MonkeyPatch, test_settings: Settings) -> FakeRepository:
     """작업이 만드는 설정·세션·저장소·추출기·유스케이스를 가짜로 바꾸고 가짜 저장소를 돌려준다."""
     fake = FakeRepository(None, stale_after=timedelta())
-    monkeypatch.setattr(document_analysis_task, "get_settings", lambda: test_settings)
+    # .env 값과 상관없이 임베딩 키가 있는 설정으로 고정한다. 키 없는 경우는 테스트에서 바꾼다.
+    settings = test_settings.model_copy(update={"embedding_api_key": SecretStr("sk-test")})
+    monkeypatch.setattr(document_analysis_task, "get_settings", lambda: settings)
     monkeypatch.setattr(document_analysis_task, "get_session_factory", lambda: None)
     monkeypatch.setattr(
         document_analysis_task, "SqlAlchemyDocumentAnalysisRepository", lambda *a, **k: fake
@@ -347,3 +350,31 @@ def test_resume_indexes_even_when_analysis_lookup_fails(repository: FakeReposito
     document_analysis_task.resume_unfinished_analyses(executor)
 
     assert executor.submitted == [(document_analysis_task.run_chunk_indexing, unindexed_id, None)]
+
+
+@pytest.mark.parametrize("api_key", [None, "", "   "])
+def test_resume_skips_indexing_without_embedding_key(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: FakeRepository,
+    test_settings: Settings,
+    caplog: pytest.LogCaptureFixture,
+    api_key: str | None,
+) -> None:
+    """EMBEDDING_API_KEY가 없거나 비어 있으면 미색인 문서를 넣지 않고 info 로그 한 줄만 남긴다."""
+    settings = test_settings.model_copy(
+        update={"embedding_api_key": SecretStr(api_key) if api_key is not None else None}
+    )
+    monkeypatch.setattr(document_analysis_task, "get_settings", lambda: settings)
+    analysis_id = uuid4()
+    repository.resumable_ids = [analysis_id]
+    repository.unindexed_ids = [uuid4()]
+    executor = FakeExecutor()
+
+    with caplog.at_level(logging.INFO, logger=document_analysis_task.__name__):
+        document_analysis_task.resume_unfinished_analyses(executor)
+
+    assert executor.submitted == [(document_analysis_task.run_document_analysis, analysis_id, None)]
+    skipped = [record for record in caplog.records if "EMBEDDING_API_KEY" in record.getMessage()]
+    assert len(skipped) == 1
+    assert skipped[0].levelno == logging.INFO
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]

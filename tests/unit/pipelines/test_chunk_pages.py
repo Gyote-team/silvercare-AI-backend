@@ -60,11 +60,34 @@ def test_long_page_is_split_within_token_range() -> None:
 
 
 def test_next_chunk_starts_with_last_two_lines_of_previous() -> None:
-    """다음 조각은 앞 조각의 마지막 두 줄로 시작한다."""
-    chunks = chunk(make_page("\n".join(numbered_lines(40))))
+    """두 줄이 겹침 상한 안이면 다음 조각은 앞 조각의 마지막 두 줄로 시작한다."""
+    chunks = chunk(make_page("\n".join(numbered_lines(60, width=40))))
 
+    assert len(chunks) > 1
     for previous, current in zip(chunks, chunks[1:], strict=False):
         assert current.content.split("\n")[:2] == previous.content.split("\n")[-2:]
+
+
+def test_overlap_shrinks_to_one_line_over_token_limit() -> None:
+    """두 줄이 겹침 상한 100을 넘으면 마지막 한 줄만 겹친다."""
+    chunks = chunk(make_page("\n".join(numbered_lines(40, width=60))))
+
+    assert len(chunks) > 1
+    for previous, current in zip(chunks, chunks[1:], strict=False):
+        assert current.content.split("\n")[0] == previous.content.split("\n")[-1]
+        assert current.content.split("\n")[1] != previous.content.split("\n")[-1]
+
+
+def test_long_line_pieces_do_not_overlap() -> None:
+    """긴 줄을 나눈 조각끼리는 겹치지 않아 조각 토큰 합이 원문의 1.2배를 넘지 않는다."""
+    long_line = " ".join(["가나다라마바사"] * 200)
+    text = "\n".join(["짧은 줄 하나 입니다 " * 20, long_line, long_line])
+
+    chunks = chunk_pages([make_page(text)])
+
+    assert len(chunks) > 1
+    assert all(item.token_count <= MAX_TOKENS for item in chunks)
+    assert sum(item.token_count for item in chunks) <= 1.2 * count_tokens_cl100k(text)
 
 
 def test_every_line_is_kept_in_order() -> None:
@@ -95,6 +118,17 @@ def test_header_is_not_repeated_after_table_ends() -> None:
 
     assert len(chunks) > 1
     assert all(not item.content.startswith(HEADER) for item in chunks[1:])
+
+
+def test_header_is_not_attached_to_findings_after_table() -> None:
+    """빈 줄 없이 표 뒤에 소견 문장이 이어지면 소견 조각에는 머리글을 붙이지 않는다."""
+    rows = [f"혈색소 13.{index} g/dL 12.0-16.0" for index in range(3)]
+    findings = ["의사 소견 다음 진료 때 다시 확인합니다 추가 설명 문장입니다 " * 3] * 20
+    chunks = chunk_pages([make_page("\n".join([HEADER, *rows, *findings]))])
+
+    assert len(chunks) > 1
+    assert chunks[0].content.startswith(HEADER)
+    assert all(HEADER not in item.content for item in chunks[1:])
 
 
 def test_chunk_index_is_continuous_across_pages() -> None:
