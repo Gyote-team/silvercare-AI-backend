@@ -1,7 +1,7 @@
 """페이지 원문을 검색용 조각으로 나눈다. DB나 외부 API를 쓰지 않는 순수 함수다."""
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 
 import tiktoken
@@ -71,20 +71,25 @@ def chunk_pages(
 
     조각은 MAX_TOKENS를 넘지 않게 줄을 쌓고, 다음 조각은 앞 조각의 마지막 줄 1~2개
     (OVERLAP_MAX_TOKENS 이하)로 시작한다. 긴 한 줄을 나눈 조각끼리는 겹치지 않는다.
-    표 줄에서 잘리면 다음 조각 앞에 표 머리글 줄을 붙인다. 페이지는 합치지 않는다.
+    표 줄에서 잘리면 다음 조각 앞에 표 머리글 줄을 붙이고, 붙이면 상한을 넘는 조각에는
+    붙이지 않는다. 페이지는 합치지 않는다.
     exclude_line은 조각에서 뺄 줄(예: 개인정보 머리글)을 고르는 자리로, 지금은 쓰지 않는다.
+    모든 조각은 MAX_TOKENS 이하이고, 어긋나면 잘라 원문을 잃는 대신 ValueError를 던진다.
     """
     chunks: list[DocumentChunk] = []
     for page in pages:
         lines = _read_lines(page.text, count_tokens, exclude_line)
         for window in _windows(lines, count_tokens):
             content = _render(window)
+            token_count = count_tokens(content)
+            if token_count > MAX_TOKENS:
+                raise ValueError("조각이 토큰 상한을 넘었습니다")
             chunks.append(
                 DocumentChunk(
                     chunk_index=len(chunks),
                     page_id=page.page_id,
                     content=content,
-                    token_count=count_tokens(content),
+                    token_count=token_count,
                 )
             )
     return chunks
@@ -132,14 +137,25 @@ def _windows(lines: list[_Line], count_tokens: Callable[[str], int]) -> list[lis
     windows: list[list[_Line]] = []
     current: list[_Line] = []
     for line in lines:
-        if current and count_tokens(_render([*current, line])) > MAX_TOKENS:
+        if not current:
+            current = _start(line, count_tokens)
+        elif count_tokens(_render([*current, line])) > MAX_TOKENS:
             windows.append(current)
-            current = [*_overlap(current, line, count_tokens), line]
+            tail = _overlap(current, line, count_tokens)
+            current = [*tail, line] if tail else _start(line, count_tokens)
         else:
             current.append(line)
     if current:
         windows.append(current)
     return windows
+
+
+def _start(line: _Line, count_tokens: Callable[[str], int]) -> list[_Line]:
+    # 머리글을 붙이면 상한을 넘을 때는 머리글을 빼고 시작한다. 머리글 줄은 같은 페이지 앞 조각에
+    # 이미 있어 내용이 빠지지 않는다. 머리글 없는 줄 하나는 _MAX_LINE_TOKENS 이하다.
+    if line.header is not None and count_tokens(_render([line])) > MAX_TOKENS:
+        return [replace(line, header=None)]
+    return [line]
 
 
 def _overlap(

@@ -1,7 +1,10 @@
 """페이지 원문을 조각으로 나누는 순수 함수 테스트. 합성 문서만 쓴다."""
 
+import random
 from pathlib import Path
 from uuid import UUID, uuid4
+
+import pytest
 
 from app.domain.document.document_chunk import DocumentChunk, PageText
 from app.pipelines.documents.steps import chunk_pages as chunk_pages_module
@@ -129,6 +132,73 @@ def test_header_is_not_attached_to_findings_after_table() -> None:
     assert len(chunks) > 1
     assert chunks[0].content.startswith(HEADER)
     assert all(HEADER not in item.content for item in chunks[1:])
+
+
+def test_header_is_dropped_when_it_would_exceed_limit() -> None:
+    """머리글을 붙이면 500을 넘는 조각에는 머리글 없이 행만 담는다(재현 입력 회귀 테스트)."""
+    header = "검사명 결과" + " A" * 245
+    row = "X 1" + " B" * 247
+
+    chunks = chunk_pages([make_page(f"{header}\n{row}")])
+
+    assert [item.token_count <= MAX_TOKENS for item in chunks] == [True, True]
+    assert chunks[1].content == row
+
+
+def near(rng: random.Random, edge: int) -> int:
+    """절반은 1~edge+20 사이 아무 값, 절반은 edge 바로 근처 값을 고른다."""
+    return rng.randint(1, edge + 20) if rng.random() < 0.5 else edge + rng.randint(-2, 2)
+
+
+def varied_page_text(rng: random.Random, header_edge: int, row_edge: int) -> str:
+    """긴 머리글, 긴 행, 공백 없는 긴 줄, 소견, 빈 줄을 섞은 합성 원문 한 쪽을 만든다.
+
+    edge는 머리글·행이 줄 하나 상한(250)에 딱 닿는 반복 수다. 경계를 넘는 행은 나뉘고,
+    넘는 머리글은 일반 줄이 된다.
+    """
+    makers = [
+        lambda: "검사명 결과" + " A" * near(rng, header_edge),
+        lambda: "X 10" + " B" * near(rng, row_edge),
+        lambda: f"혈색소 13.{rng.randint(0, 9)} g/dL 12.0-16.0",
+        lambda: "혈" * rng.randint(300, 1200),
+        lambda: "소견 다음 진료 때 다시 확인합니다 " * rng.randint(1, 15),
+        lambda: "",
+    ]
+    weights = [2, 4, 4, 1, 2, 1]
+    return "\n".join(
+        rng.choices(makers, weights)[0]() for _ in range(rng.randint(1, 40))
+    )
+
+
+def varied_pages(seed: int, *, header_edge: int, row_edge: int) -> list[PageText]:
+    """시드마다 1~3쪽짜리 합성 문서를 만든다. 같은 시드는 같은 문서다."""
+    rng = random.Random(seed)
+    return [
+        make_page(varied_page_text(rng, header_edge, row_edge), page_no=no)
+        for no in range(1, rng.randint(1, 3) + 1)
+    ]
+
+
+@pytest.mark.parametrize("seed", range(200))
+def test_all_chunks_stay_within_limit_on_varied_inputs(seed: int) -> None:
+    """여러 입력 조합에서도 모든 조각이 500 이하이고 token_count가 내용과 맞는다."""
+    # 글자 수 기준으로 머리글은 6+2*122=250자, 행은 4+2*123=250자에서 경계에 닿는다.
+    pages = varied_pages(seed, header_edge=122, row_edge=123)
+
+    chunks = chunk_pages(pages, count_tokens=count_characters)
+
+    assert all(item.token_count <= MAX_TOKENS for item in chunks)
+    assert all(item.token_count == len(item.content) for item in chunks)
+
+
+@pytest.mark.parametrize("seed", range(50))
+def test_all_chunks_stay_within_limit_with_real_tokenizer(seed: int) -> None:
+    """실제 cl100k_base 토큰 수로도 여러 입력 조합에서 모든 조각이 500 이하다."""
+    # cl100k 기준으로 머리글은 " A" 245개, 행은 " B" 247개 근처에서 250토큰에 닿는다.
+    chunks = chunk_pages(varied_pages(seed, header_edge=245, row_edge=247))
+
+    assert all(item.token_count <= MAX_TOKENS for item in chunks)
+    assert all(item.token_count == count_tokens_cl100k(item.content) for item in chunks)
 
 
 def test_chunk_index_is_continuous_across_pages() -> None:
