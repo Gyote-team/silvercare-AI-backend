@@ -1,5 +1,6 @@
 """Spring 내부 호출용 결과 문서 생성 API다."""
 
+from secrets import compare_digest
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Request
@@ -20,7 +21,8 @@ def require_internal_token(
     x_internal_token: Annotated[str | None, Header()] = None,
 ) -> None:
     """외부에서 AI 생성 endpoint를 직접 호출하지 못하게 한다."""
-    if not x_internal_token or x_internal_token != settings.ai_internal_token.get_secret_value():
+    expected = settings.ai_internal_token.get_secret_value()
+    if not x_internal_token or not compare_digest(x_internal_token, expected):
         raise ApiError(CommonErrorCode.UNAUTHORIZED)
 
 
@@ -32,3 +34,15 @@ def generate(
 ) -> GenerateResultDocumentResponse:
     """근거가 검증된 상세 설명 또는 비교 문서를 생성한다."""
     return http_request.app.state.ai_result_document_use_case.generate(request)
+
+
+@router.post("/generate-detail", response_model=GenerateResultDocumentResponse)
+def generate_detail(
+    request: GenerateResultDocumentRequest,
+    _: Annotated[None, Depends(require_internal_token)],
+    http_request: Request,
+) -> GenerateResultDocumentResponse:
+    """사용자가 저장을 확정한 답변만 상세 문서로 확장한다."""
+    return http_request.app.state.ai_result_document_use_case.generate(
+        request.model_copy(update={"detailed_document": True})
+    )
