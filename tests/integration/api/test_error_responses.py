@@ -55,3 +55,34 @@ def test_invalid_internal_token_uses_shared_error_shape() -> None:
     assert body["code"] == "AUTH_001"
     assert body["message"] == "인증 정보가 올바르지 않습니다."
     assert "timestamp" in body
+
+
+def test_spring_camel_case_request_is_accepted_before_authentication() -> None:
+    """Spring 직렬화 설정이 camelCase여도 요청 계약을 해석한 뒤 인증을 검사한다."""
+    app.dependency_overrides[get_settings] = _settings
+    try:
+        response = TestClient(app).post(
+            "/internal/ai-result-documents/generate",
+            headers={"X-Internal-Token": "wrong-token"},
+            json={
+                "requestId": "10000000-0000-0000-0000-000000000010",
+                "patientId": "12000000-0000-0000-0000-000000000001",
+                "actorUserId": "10000000-0000-0000-0000-000000000001",
+                "question": "이전 검사와 비교해 주세요.",
+                "questionTypeHint": "LAB_RESULT_COMPARISON",
+                "evidence": [
+                    {
+                        "citationId": "10000000-0000-0000-0000-000000000011",
+                        "sourceType": "EXTRACTED_ITEM",
+                        "documentId": "b1000000-0000-0000-0000-000000000001",
+                        "pageNo": 1,
+                        "sourceText": "당화혈색소 7.1%",
+                    }
+                ],
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "AUTH_001"

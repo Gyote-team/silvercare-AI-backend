@@ -15,13 +15,13 @@ class Settings(BaseSettings):
     database_url: str
     ai_internal_token: SecretStr = Field(min_length=1)
     storage_local_root: str = Field(min_length=1)
-    llm_provider: str = "gemini_openai_compatible"
+    llm_provider: str = "openai"
     # 결과 문서 작업이 아닌 VLM 파이프라인도 이 설정을 사용하므로, 실제 호출 시점에만 키를 검증한다.
     llm_api_key: SecretStr | None = None
     llm_base_url: str = Field(
-        default="https://generativelanguage.googleapis.com/v1beta/openai/", min_length=1
+        default="https://api.openai.com/v1", min_length=1
     )
-    llm_model: str = Field(default="gemini-3.8-flash", min_length=1)
+    llm_model: str = Field(default="gpt-5.6-sol", min_length=1)
     llm_timeout_seconds: float = Field(default=90, gt=0, le=120)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_temperature: float = Field(default=0.2, ge=0, le=1)
