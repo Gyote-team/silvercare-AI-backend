@@ -31,24 +31,29 @@ class OpenAiCompatibleLlmClient:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._client = OpenAI(
-            api_key=settings.llm_api_key.get_secret_value() if settings.llm_api_key else "",
-            base_url=settings.llm_base_url,
-            timeout=settings.llm_timeout_seconds,
-            max_retries=settings.llm_max_retries,
+        key = settings.llm_api_key.get_secret_value().strip() if settings.llm_api_key else ""
+        # 다른 기능의 서버 기동을 막거나 문서 키로 대체하지 않는다.
+        self._client = (
+            OpenAI(
+                api_key=key,
+                base_url=settings.llm_base_url,
+                timeout=settings.llm_timeout_seconds,
+                max_retries=settings.llm_max_retries,
+            )
+            if key
+            else None
         )
 
     def close(self) -> None:
         """앱 종료 시 연결 풀을 닫는다."""
-        self._client.close()
+        if self._client is not None:
+            self._client.close()
 
     def generate_grounded_answer(
         self, system_prompt: str, user_prompt: str
     ) -> tuple[GeneratedAnswer, LlmUsage]:
-        if self._settings.llm_api_key is None:
-            raise AiResultGenerationError(
-                AiResultErrorCode.AI_API_KEY_MISSING, retryable=False
-            )
+        if self._client is None:
+            raise AiResultGenerationError(AiResultErrorCode.AI_API_KEY_MISSING, retryable=False)
         try:
             response = self._client.responses.parse(
                 model=self._settings.llm_model,
@@ -85,9 +90,7 @@ class OpenAiCompatibleLlmClient:
             ) from None
         answer = response.output_parsed
         if answer is None:
-            raise AiResultGenerationError(
-                AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True
-            )
+            raise AiResultGenerationError(AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True)
         raw_usage = getattr(response, "usage", None)
         usage = LlmUsage(
             model=self._settings.llm_model,

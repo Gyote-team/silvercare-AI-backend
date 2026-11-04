@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     stt_lease_seconds: int = Field(default=600, gt=0)
     stt_db_retry_seconds: float = Field(default=5, gt=0, le=60)
     stt_max_transcript_chars: int = Field(default=100000, gt=0, le=1000000)
+    previsit_summary_api_key: SecretStr | None = None
+    previsit_summary_model: str = "gpt-5.6-sol"
+    previsit_summary_base_url: str = "https://api.openai.com/v1"
+    previsit_summary_timeout_seconds: float = Field(default=90, gt=0, le=90)
     openai_vlm_model: str = Field(default="gpt-5.6-sol", min_length=1)
     openai_vlm_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "high"
     openai_vlm_max_output_tokens: int = Field(default=16000, gt=0)
