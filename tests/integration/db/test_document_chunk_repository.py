@@ -145,15 +145,25 @@ def test_no_target_when_latest_analysis_is_not_succeeded(
     assert repository.find_index_target(document_id) is None
 
 
+# 문서 삭제 방식 두 가지. Spring은 status를 DELETED로 바꾸거나 deleted_at을 채운다.
+DELETIONS = {
+    "deleted_at": "UPDATE documents SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id",
+    "status": "UPDATE documents SET status = 'DELETED' WHERE id = :id",
+}
+
+
+def delete_document(db_session: Session, document_id: UUID, kind: str) -> None:
+    """주어진 방식으로 문서를 삭제 상태로 만든다."""
+    db_session.execute(text(DELETIONS[kind]), {"id": document_id})
+
+
+@pytest.mark.parametrize("kind", DELETIONS)
 def test_no_target_when_document_is_deleted(
-    db_session: Session, repository: SqlAlchemyDocumentChunkRepository
+    db_session: Session, repository: SqlAlchemyDocumentChunkRepository, kind: str
 ) -> None:
-    """삭제된 문서는 대상이 아니다."""
+    """deleted_at이 있거나 status가 DELETED인 문서는 대상이 아니다."""
     document_id = make_ready_document(db_session, {1: "원문"})
-    db_session.execute(
-        text("UPDATE documents SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id"),
-        {"id": document_id},
-    )
+    delete_document(db_session, document_id, kind)
 
     assert repository.find_index_target(document_id) is None
 
@@ -250,18 +260,28 @@ def test_superseded_analysis_changes_nothing(
     assert stored_rows(db_session, document_id) == []
 
 
+@pytest.mark.parametrize("kind", DELETIONS)
 def test_deleted_document_changes_nothing(
-    db_session: Session, repository: SqlAlchemyDocumentChunkRepository
+    db_session: Session, repository: SqlAlchemyDocumentChunkRepository, kind: str
 ) -> None:
-    """그사이 삭제된 문서에는 저장하지 않고 False를 반환한다."""
+    """그사이 deleted_at이 채워졌거나 DELETED가 된 문서에는 저장하지 않고 False를 반환한다."""
     document_id = make_ready_document(db_session, {1: "원문"})
     target = require_target(repository, document_id)
-    db_session.execute(
-        text("UPDATE documents SET status = 'DELETED' WHERE id = :id"), {"id": document_id}
-    )
+    delete_document(db_session, document_id, kind)
 
     assert store(repository, target, "조각") is False
     assert stored_rows(db_session, document_id) == []
+
+
+@pytest.mark.parametrize("kind", DELETIONS)
+def test_deleted_document_is_not_unindexed_candidate(
+    db_session: Session, repository: SqlAlchemyDocumentChunkRepository, kind: str
+) -> None:
+    """deleted_at이 있거나 DELETED인 문서는 재처리 대상으로 고르지 않는다."""
+    document_id = make_ready_document(db_session, {1: "원문"})
+    delete_document(db_session, document_id, kind)
+
+    assert document_id not in repository.find_unindexed_document_ids(limit=10000)
 
 
 def test_health_record_embeddings_are_untouched(

@@ -387,6 +387,8 @@ Windows PowerShell 기준입니다. 저장소 루트에서 실행합니다.
 
    `--http h11`은 Spring Java HttpClient가 보내는 HTTP/2 업그레이드 헤더를 기본 HTTP 해석기가 처리하지 못해 400을 내는 문제를 피하려고 붙입니다.
 
+   tiktoken은 처음 실행할 때 인코딩 파일을 내려받으므로, 외부 접속이 없는 배포 환경에서는 이미지 빌드 때 `TIKTOKEN_CACHE_DIR`에 미리 받아 둡니다.
+
    <http://localhost:8000/health> 에서 `{"status": "ok"}`가 보이면 정상입니다. /health는 서버가 응답하는지만 확인하며, DB 연결이나 내부 토큰 설정을 검증하지 않습니다.
 
 6. 테스트와 린트
