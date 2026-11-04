@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     openai_vlm_connect_timeout_seconds: float = Field(default=10, gt=0)
     openai_vlm_max_retries: int = Field(default=2, ge=0)
     openai_vlm_retry_backoff_seconds: float = Field(default=1.0, ge=0)
+    # 문서 조각 임베딩 전용 키. OPENAI_API_KEY 등 다른 키로 대체하지 않는다.
+    embedding_api_key: SecretStr | None = None
+    embedding_model: str = Field(default="text-embedding-3-small", min_length=1)
+    embedding_timeout_seconds: float = Field(default=30, gt=0)
+    embedding_max_retries: int = Field(default=2, ge=0, le=5)
+    embedding_retry_backoff_seconds: float = Field(default=1.0, ge=0)
+    embedding_batch_size: int = Field(default=100, gt=0, le=2048)
 
     @model_validator(mode="after")
     def validate_stt_lease(self):

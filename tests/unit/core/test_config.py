@@ -1,6 +1,28 @@
 """서버 설정의 기본값을 검증한다."""
 
+import pytest
+from pydantic import SecretStr
+
 from app.core.config import Settings
+
+
+def test_embedding_key_does_not_fall_back_to_other_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OPENAI_API_KEY나 LLM_API_KEY만 있으면 임베딩 키는 비어 있다."""
+    monkeypatch.delenv("EMBEDDING_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setenv("LLM_API_KEY", "sk-llm")
+
+    settings = Settings(
+        _env_file=None,
+        database_url="postgresql+psycopg://localhost/test",
+        ai_internal_token=SecretStr("test-token"),
+        storage_local_root="./data",
+    )
+
+    assert settings.embedding_api_key is None
+    assert settings.embedding_model == "text-embedding-3-small"
 
 
 def _default(name: str) -> object:

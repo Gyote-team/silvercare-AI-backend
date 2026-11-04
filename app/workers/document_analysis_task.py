@@ -9,13 +9,21 @@ from uuid import UUID
 
 from app.application.services.retrying_page_extractor import RetryingPageExtractor
 from app.application.use_cases.analyze_document import analyze_document
+from app.application.use_cases.index_document_chunks import index_document_chunks
 from app.core.config import Settings, get_settings
-from app.domain.document.document_analysis import AnalysisFailure
+from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
 from app.domain.operation.error_code import AnalysisErrorCode, FailedStep
 from app.infrastructure.db.repositories.document_analysis_repository import (
     SqlAlchemyDocumentAnalysisRepository,
 )
+from app.infrastructure.db.repositories.document_chunk_repository import (
+    SqlAlchemyDocumentChunkRepository,
+)
 from app.infrastructure.db.session import get_session_factory
+from app.infrastructure.providers.embedding.openai_text_embedder import (
+    OpenAITextEmbedder,
+    create_text_embedder,
+)
 from app.infrastructure.providers.llm.openai_page_extractor import (
     OpenAIPageExtractor,
     create_page_extractor,
@@ -32,6 +40,8 @@ _SETUP_FAILURE = AnalysisFailure(
     retryable=True,
     detail_code="SETUP_FAILED",
 )
+# 분석이 성공해 원문이 저장된 상태. 이 상태로 끝나면 같은 실행 안에서 청킹·임베딩까지 한다.
+_INDEXABLE_STATUSES = frozenset({DocumentStatus.READY, DocumentStatus.NEEDS_REVIEW})
 
 
 def run_document_analysis(
@@ -91,13 +101,44 @@ def run_document_analysis(
             request_id,
             result.document_status or "건너뜀(대상 없음, 시작 거부 또는 분석 도중 삭제)",
         )
+        if result.document_status in _INDEXABLE_STATUSES:
+            run_chunk_indexing(document_id, request_id)
     finally:
         if inner is not None:
             _close_extractor(inner, document_id)
 
 
+def run_chunk_indexing(document_id: UUID, request_id: str | None = None) -> None:
+    """문서 하나의 원문을 청킹·임베딩해 저장한다. 실패해도 예외를 던지지 않고 로그만 남긴다.
+
+    분석 뒤의 별도 단계라 실패해도 문서 상태와 추출 항목은 바꾸지 않는다.
+    """
+    embedder: OpenAITextEmbedder | None = None
+    try:
+        embedder = create_text_embedder(get_settings())
+        index_document_chunks(
+            document_id,
+            repository=SqlAlchemyDocumentChunkRepository(get_session_factory()),
+            embedder=embedder,
+        )
+    except Exception as error:
+        # 백그라운드 작업 경계다. 예외 메시지에는 원문이 섞일 수 있어 클래스 이름만 남긴다.
+        logger.error(
+            "조각 색인 작업 실패: document_id=%s, request_id=%s, error=%s",
+            document_id,
+            request_id,
+            type(error).__name__,
+        )
+    finally:
+        if embedder is not None:
+            _close_embedder(embedder, document_id)
+
+
 def resume_unfinished_analyses(executor: Executor) -> None:
-    """프로세스와 함께 멈춘 분석(오래된 PENDING, 만료된 RUNNING)을 executor에 다시 넣는다."""
+    """프로세스와 함께 멈춘 분석(오래된 PENDING, 만료된 RUNNING)을 executor에 다시 넣는다.
+
+    이어서 분석은 끝났지만 조각 임베딩이 없는 문서의 색인도 넣는다.
+    """
     try:
         settings = get_settings()
         document_ids = _create_repository(settings).find_resumable_document_ids(
@@ -110,8 +151,24 @@ def resume_unfinished_analyses(executor: Executor) -> None:
     except Exception as error:
         # 서버 시작 때 executor에서 도는 작업이라 예외를 받을 곳이 없으므로 로그만 남긴다.
         logger.error("남은 문서 분석 재실행 실패: error=%s", type(error).__name__)
+    else:
+        logger.info("남은 문서 분석 재실행: count=%s", len(document_ids))
+    _resume_unindexed_documents(executor)
+
+
+def _resume_unindexed_documents(executor: Executor) -> None:
+    # 분석 저장 직후 프로세스가 죽었거나 임베딩이 실패한 문서는 다른 재시도 경로가 없다.
+    try:
+        settings = get_settings()
+        document_ids = SqlAlchemyDocumentChunkRepository(
+            get_session_factory()
+        ).find_unindexed_document_ids(limit=settings.document_analysis_resume_limit)
+        for document_id in document_ids:
+            executor.submit(run_chunk_indexing, document_id, None)
+    except Exception as error:
+        logger.error("남은 조각 색인 재실행 실패: error=%s", type(error).__name__)
         return
-    logger.info("남은 문서 분석 재실행: count=%s", len(document_ids))
+    logger.info("남은 조각 색인 재실행: count=%s", len(document_ids))
 
 
 def _create_repository(settings: Settings) -> SqlAlchemyDocumentAnalysisRepository:
@@ -175,6 +232,16 @@ def _close_extractor(inner: OpenAIPageExtractor, document_id: UUID) -> None:
     except Exception as error:
         logger.error(
             "추출기 닫기 실패: document_id=%s, error=%s", document_id, type(error).__name__
+        )
+
+
+def _close_embedder(embedder: OpenAITextEmbedder, document_id: UUID) -> None:
+    # 닫기 실패가 작업 밖으로 나가지 않게 여기서 막는다.
+    try:
+        embedder.close()
+    except Exception as error:
+        logger.error(
+            "임베더 닫기 실패: document_id=%s, error=%s", document_id, type(error).__name__
         )
 
 

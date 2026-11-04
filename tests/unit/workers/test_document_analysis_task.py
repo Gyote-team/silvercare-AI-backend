@@ -9,7 +9,7 @@ import pytest
 from app.application.ports.document_analysis_repository import AnalysisTarget
 from app.application.use_cases.analyze_document import DocumentAnalysisResult
 from app.core.config import Settings
-from app.domain.document.document_analysis import AnalysisFailure
+from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
 from app.workers import document_analysis_task
 
 _REQUEST_ID = "req-test-1"
@@ -26,6 +26,19 @@ class FakeRepository:
         self.before_start_error: Exception | None = None
         self.resumable_ids: list[UUID] = []
         self.resumable_error: Exception | None = None
+        self.unindexed_ids: list[UUID] = []
+        self.indexed_ids: list[UUID] = []
+        self.index_error: Exception | None = None
+
+    def find_unindexed_document_ids(self, *, limit: int) -> list[UUID]:
+        """조각 저장소 대신 정해 둔 미색인 문서 id를 돌려준다."""
+        return self.unindexed_ids
+
+    def index(self, document_id: UUID, **kwargs: object) -> None:
+        """index_document_chunks 대신 호출을 기록한다. 정해 둔 예외가 있으면 던진다."""
+        if self.index_error is not None:
+            raise self.index_error
+        self.indexed_ids.append(document_id)
 
     def find_target(self, document_id: UUID) -> AnalysisTarget | None:
         """정해 둔 대상을 돌려준다."""
@@ -76,6 +89,12 @@ def repository(monkeypatch: pytest.MonkeyPatch, test_settings: Settings) -> Fake
         "analyze_document",
         lambda *a, **k: DocumentAnalysisResult(document_status=None),
     )
+    # 조각 저장소와 임베더, 색인 유스케이스도 가짜로 바꾼다. 실제 키와 DB를 쓰지 않는다.
+    monkeypatch.setattr(
+        document_analysis_task, "SqlAlchemyDocumentChunkRepository", lambda *a, **k: fake
+    )
+    monkeypatch.setattr(document_analysis_task, "create_text_embedder", lambda _: FakeExtractor())
+    monkeypatch.setattr(document_analysis_task, "index_document_chunks", fake.index)
     return fake
 
 
@@ -248,3 +267,83 @@ def test_request_differing_from_db_logs_field_names_only(
     assert "mimeType" not in caplog.text
     assert _OBJECT_KEY not in caplog.text
     assert stored_key not in caplog.text
+
+
+def _finish_analysis_with(monkeypatch: pytest.MonkeyPatch, status: DocumentStatus | None) -> None:
+    """분석이 주어진 문서 상태로 끝난 것처럼 바꾼다."""
+    monkeypatch.setattr(
+        document_analysis_task,
+        "analyze_document",
+        lambda *a, **k: DocumentAnalysisResult(document_status=status),
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "indexed"),
+    [
+        (DocumentStatus.READY, True),
+        (DocumentStatus.NEEDS_REVIEW, True),
+        (DocumentStatus.FAILED, False),
+        (None, False),
+    ],
+)
+def test_indexing_runs_only_after_successful_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: FakeRepository,
+    status: DocumentStatus | None,
+    indexed: bool,
+) -> None:
+    """분석이 READY나 NEEDS_REVIEW로 끝났을 때만 같은 실행에서 색인한다."""
+    _finish_analysis_with(monkeypatch, status)
+    document_id = uuid4()
+
+    _run(document_id)
+
+    assert repository.indexed_ids == ([document_id] if indexed else [])
+
+
+def test_indexing_failure_is_logged_without_recording(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: FakeRepository,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """색인이 실패해도 실패 기록을 남기지 않고, 로그에는 id와 예외 이름만 남는다."""
+    _finish_analysis_with(monkeypatch, DocumentStatus.READY)
+    repository.index_error = RuntimeError(_OBJECT_KEY)
+    document_id = uuid4()
+
+    with caplog.at_level(logging.ERROR, logger=document_analysis_task.__name__):
+        _run(document_id)
+
+    assert repository.before_start_failures == []
+    assert "조각 색인 작업 실패" in caplog.text
+    assert str(document_id) in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert _OBJECT_KEY not in caplog.text
+
+
+def test_resume_submits_unindexed_documents_after_analyses(repository: FakeRepository) -> None:
+    """시작 시 재실행은 남은 분석 다음에 임베딩이 없는 문서의 색인을 넣는다."""
+    analysis_id, unindexed_id = uuid4(), uuid4()
+    repository.resumable_ids = [analysis_id]
+    repository.unindexed_ids = [unindexed_id]
+    executor = FakeExecutor()
+
+    document_analysis_task.resume_unfinished_analyses(executor)
+
+    assert executor.submitted == [
+        (document_analysis_task.run_document_analysis, analysis_id, None),
+        (document_analysis_task.run_chunk_indexing, unindexed_id, None),
+    ]
+
+
+def test_resume_indexes_even_when_analysis_lookup_fails(repository: FakeRepository) -> None:
+    """남은 분석 조회가 실패해도 미색인 문서의 색인은 넣는다."""
+    repository.resumable_error = ConnectionError(_OBJECT_KEY)
+    unindexed_id = uuid4()
+    repository.unindexed_ids = [unindexed_id]
+    executor = FakeExecutor()
+
+    document_analysis_task.resume_unfinished_analyses(executor)
+
+    assert executor.submitted == [(document_analysis_task.run_chunk_indexing, unindexed_id, None)]
