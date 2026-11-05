@@ -15,9 +15,18 @@ OVERLAP_LINES = 2
 OVERLAP_MAX_TOKENS = 100
 # 한 줄이 이보다 길면 공백, 그다음 글자 단위로 나눈다. 머리글과 겹친 줄이 들어갈 자리를 남긴다.
 _MAX_LINE_TOKENS = MAX_TOKENS // 2
-# 표 머리글 칸 이름. 원문은 표를 칸 사이 공백으로만 옮기므로 칸 이름으로 머리글 줄을 알아본다.
+# 표 머리글 칸 이름. 원문은 표를 칸 사이 공백·탭·|로 옮기므로 칸 이름으로 머리글 줄을 알아본다.
+# 영어 칸 이름은 소문자로 적고 비교할 때 소문자로 바꾼다.
 _HEADER_CELLS = frozenset(
     {
+        "test",
+        "result",
+        "unit",
+        "units",
+        "reference",
+        "range",
+        "value",
+        "flag",
         "검사명",
         "검사항목",
         "항목",
@@ -38,6 +47,9 @@ _HEADER_CELLS = frozenset(
 _MIN_HEADER_CELLS = 2
 # 표 줄로 보는 최소 칸 수. 표 줄은 숫자도 하나 이상 있어야 한다.
 _MIN_ROW_CELLS = 3
+_CELL_SEPARATOR = re.compile(r"[\s|]+")
+# 문장 끝맺음. 칸 이름이 우연히 두 개 든 안내 문장을 머리글로 보지 않는 데 쓴다.
+_SENTENCE_END = re.compile(r"(?:[다요]\s*[.!?]?|[.!?])$")
 
 
 # 개인정보 라벨로 시작하는 줄. 라벨 글자 사이 OCR 공백을 허용하고, 라벨 바로 뒤에 한글이 오면
@@ -153,12 +165,19 @@ def _read_lines(
     return lines
 
 
+def _cells(line: str) -> list[str]:
+    return [cell for cell in _CELL_SEPARATOR.split(line) if cell]
+
+
 def _is_table_header(line: str) -> bool:
-    return sum(cell in _HEADER_CELLS for cell in line.split()) >= _MIN_HEADER_CELLS
+    # 끝맺음으로 문장을 거르는 단순 규칙이라, 끝맺음 없이 칸 이름 두 개가 든 문장은 못 거른다.
+    if _SENTENCE_END.search(line):
+        return False
+    return sum(cell.lower() in _HEADER_CELLS for cell in _cells(line)) >= _MIN_HEADER_CELLS
 
 
 def _is_table_row(line: str) -> bool:
-    return len(line.split()) >= _MIN_ROW_CELLS and any(char.isdigit() for char in line)
+    return len(_cells(line)) >= _MIN_ROW_CELLS and any(char.isdigit() for char in line)
 
 
 def _windows(lines: list[_Line], count_tokens: Callable[[str], int]) -> list[list[_Line]]:

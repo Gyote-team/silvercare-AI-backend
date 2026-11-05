@@ -146,6 +146,65 @@ def test_header_is_dropped_when_it_would_exceed_limit() -> None:
     assert chunks[1].content == row
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "검사명\t결과\t단위\t참고치",
+        "검사명    결과     단위   참고치",
+        "검사명|결과|단위|참고치",
+        "| 검사명 | 결과 | 단위 | 참고치 |",
+        "검사 명 결과 단위 참고치",
+        "Test Result Unit Reference",
+        "TEST   RESULT   UNITS   REFERENCE RANGE",
+        "No 약품명 용법 용량 투약일수 비고",
+    ],
+)
+def test_ocr_header_variants_are_headers(line: str) -> None:
+    """탭·여러 칸 공백·| 구분, 일부 칸 띄어쓰기가 깨진 머리글, 영어 머리글을 머리글로 본다."""
+    assert chunk_pages_module._is_table_header(line) is True
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "검사 결과 단위를 확인해 주세요",
+        "항목 결과 모두 정상이며 추가 검사는 필요하지 않습니다",
+        "결과 판정은 다음 진료 때 설명드립니다.",
+        "Please check the test result with your doctor.",
+        "혈색소 13.2 g/dL 12.0-16.0",
+    ],
+)
+def test_sentences_with_header_words_are_not_headers(line: str) -> None:
+    """칸 이름이 우연히 든 일반 문장과 표 행은 머리글로 보지 않는다."""
+    assert chunk_pages_module._is_table_header(line) is False
+
+
+@pytest.mark.parametrize("line", ["검사명결과단위참고치", "검 사 명  결과값  단 위"])
+def test_badly_spaced_header_is_not_detected(line: str) -> None:
+    """한계: 칸 사이 띄어쓰기가 사라지거나 칸 이름이 두 개 이상 쪼개진 머리글은 알아보지 못한다.
+
+    이때는 머리글이 반복되지 않을 뿐 줄 자체는 조각에 그대로 들어간다.
+    """
+    assert chunk_pages_module._is_table_header(line) is False
+
+
+@pytest.mark.parametrize("row", ["혈색소|13.2|g/dL|12.0-16.0", "혈색소\t13.2\tg/dL\t12.0-16.0"])
+def test_pipe_and_tab_rows_are_table_rows(row: str) -> None:
+    """| 나 탭으로 칸을 나눈 행도 표 행으로 본다."""
+    assert chunk_pages_module._is_table_row(row) is True
+
+
+def test_pipe_table_header_is_repeated_when_split() -> None:
+    """| 로 칸을 나눈 표도 잘리면 다음 조각 앞에 머리글이 붙는다."""
+    header = "검사명|결과|단위|참고치"
+    rows = [f"항목{index:02d}|13.{index}|g/dL|12.0-16.0" + "|가" * 10 for index in range(30)]
+
+    chunks = chunk(make_page("\n".join([header, *rows])))
+
+    assert len(chunks) > 1
+    assert all(item.content.startswith(header + "\n") for item in chunks)
+
+
 def near(rng: random.Random, edge: int) -> int:
     """절반은 1~edge+20 사이 아무 값, 절반은 edge 바로 근처 값을 고른다."""
     return rng.randint(1, edge + 20) if rng.random() < 0.5 else edge + rng.randint(-2, 2)
