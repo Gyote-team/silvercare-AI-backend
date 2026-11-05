@@ -2,10 +2,17 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
 from app.domain.document.document_chunk import DocumentChunk, PageText
+
+
+class ChunkIndexSkipReason(StrEnum):
+    """색인을 건너뛴 이유."""
+
+    NO_CHUNKS = "NO_CHUNKS"  # 원문에서 조각이 하나도 나오지 않아 기존 색인을 그대로 둠
 
 
 @dataclass(frozen=True)

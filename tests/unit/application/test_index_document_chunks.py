@@ -6,7 +6,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from app.application.ports.document_chunk_repository import ChunkIndexTarget
+from app.application.ports.document_chunk_repository import (
+    ChunkIndexSkipReason,
+    ChunkIndexTarget,
+)
 from app.application.ports.text_embedder import (
     EMBEDDING_DIMENSIONS,
     EmbeddingError,
@@ -134,13 +137,15 @@ def test_superseded_replace_is_skipped() -> None:
     assert run(repository, FakeEmbedder()).status == ChunkIndexStatus.SKIPPED
 
 
-def test_text_without_content_replaces_with_nothing_and_skips_embedding() -> None:
-    """원문이 공백뿐이면 임베딩을 부르지 않고 빈 조각으로 교체한다."""
+def test_text_without_chunks_keeps_previous_index() -> None:
+    """원문에서 조각이 나오지 않으면 임베딩도 교체도 하지 않고 NO_CHUNKS로 건너뛴다."""
     repository = FakeRepository(make_target("  \n "))
     embedder = FakeEmbedder()
 
     outcome = run(repository, embedder)
 
-    assert outcome == ChunkIndexOutcome(status=ChunkIndexStatus.INDEXED, chunk_count=0)
+    assert outcome == ChunkIndexOutcome(
+        status=ChunkIndexStatus.SKIPPED, reason=ChunkIndexSkipReason.NO_CHUNKS
+    )
     assert embedder.calls == []
-    assert repository.replace_calls == [([], [], "fake-embedding")]
+    assert repository.replace_calls == []

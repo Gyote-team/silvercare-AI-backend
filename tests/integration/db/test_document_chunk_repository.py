@@ -1,5 +1,6 @@
 """문서 조각·임베딩 저장소 테스트. 실제 PostgreSQL에 쓰고 테스트가 끝나면 롤백한다."""
 
+from collections.abc import Sequence
 from uuid import UUID, uuid4
 
 import pytest
@@ -7,7 +8,11 @@ from sqlalchemy import Row, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.application.ports.document_chunk_repository import ChunkIndexTarget
+from app.application.ports.document_chunk_repository import ChunkIndexSkipReason, ChunkIndexTarget
+from app.application.use_cases.index_document_chunks import (
+    ChunkIndexStatus,
+    index_document_chunks,
+)
 from app.domain.document.document_chunk import DocumentChunk, PageText
 from app.infrastructure.db.repositories.document_chunk_repository import (
     SqlAlchemyDocumentChunkRepository,
@@ -295,9 +300,12 @@ def test_health_record_embeddings_are_untouched(
     store(repository, target, "조각")
     store(repository, target, "새 조각")
 
-    assert db_session.execute(
-        text("SELECT count(*) FROM embeddings WHERE id = :id"), {"id": health_id}
-    ).scalar_one() == 1
+    assert (
+        db_session.execute(
+            text("SELECT count(*) FROM embeddings WHERE id = :id"), {"id": health_id}
+        ).scalar_one()
+        == 1
+    )
 
 
 def test_mismatched_vector_count_writes_nothing(
@@ -330,6 +338,46 @@ def test_unindexed_documents_are_found(
     assert indexed not in found
     assert blank not in found
     assert running not in found
+
+
+class FakeEmbedder:
+    """입력 수만 기록하고 768차원 합성 벡터를 돌려주는 가짜 임베더. 외부 API를 부르지 않는다."""
+
+    model_name = MODEL_NAME
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        """호출을 기록하고 입력 수만큼 벡터를 만든다."""
+        self.calls.append(list(texts))
+        return vectors(len(texts))
+
+
+def test_new_analysis_without_chunks_keeps_previous_index(
+    db_session: Session, repository: SqlAlchemyDocumentChunkRepository
+) -> None:
+    """새 분석의 원문에서 조각이 나오지 않으면 이전 분석의 조각과 임베딩이 그대로 남는다."""
+    document_id = make_ready_document(db_session, {1: "혈색소 13.2 g/dL"})
+    embedder = FakeEmbedder()
+    index_document_chunks(document_id, repository=repository, embedder=embedder)
+    before = stored_rows(db_session, document_id)
+    add_newer_analysis(db_session, document_id, "SUCCEEDED")
+    db_session.execute(
+        text("UPDATE document_pages SET ocr_text = '  ' WHERE document_id = :id"),
+        {"id": document_id},
+    )
+
+    outcome = index_document_chunks(document_id, repository=repository, embedder=embedder)
+
+    assert (outcome.status, outcome.reason) == (
+        ChunkIndexStatus.SKIPPED,
+        ChunkIndexSkipReason.NO_CHUNKS,
+    )
+    assert len(embedder.calls) == 1
+    assert len(before) == 1
+    assert stored_rows(db_session, document_id) == before
+    assert count_chunk_embeddings(db_session, document_id) == 1
 
 
 def count_chunk_embeddings(db_session: Session, document_id: UUID) -> int:

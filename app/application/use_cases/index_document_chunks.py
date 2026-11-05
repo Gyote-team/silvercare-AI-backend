@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
-from app.application.ports.document_chunk_repository import DocumentChunkRepository
+from app.application.ports.document_chunk_repository import (
+    ChunkIndexSkipReason,
+    DocumentChunkRepository,
+)
 from app.application.ports.text_embedder import EmbeddingError, TextEmbedder
 from app.pipelines.documents.steps.chunk_pages import chunk_pages
 
@@ -22,11 +25,12 @@ class ChunkIndexStatus(StrEnum):
 
 @dataclass(frozen=True)
 class ChunkIndexOutcome:
-    """색인 결과. error_code는 FAILED일 때 EmbeddingErrorCode 값이다."""
+    """색인 결과. error_code는 FAILED일 때 EmbeddingErrorCode 값, reason은 SKIPPED일 때 이유다."""
 
     status: ChunkIndexStatus
     chunk_count: int = 0
     error_code: str | None = None
+    reason: ChunkIndexSkipReason | None = None
 
 
 def index_document_chunks(
@@ -43,8 +47,18 @@ def index_document_chunks(
         return ChunkIndexOutcome(status=ChunkIndexStatus.SKIPPED)
 
     chunks = chunk_pages(target.pages)
+    if not chunks:
+        # 빈 결과로 교체하면 이전 분석의 색인까지 지워 검색할 것이 없어지므로 그대로 둔다.
+        logger.info(
+            "조각이 없어 기존 색인을 그대로 둡니다: document_id=%s, analysis_id=%s",
+            document_id,
+            target.analysis_id,
+        )
+        return ChunkIndexOutcome(
+            status=ChunkIndexStatus.SKIPPED, reason=ChunkIndexSkipReason.NO_CHUNKS
+        )
     try:
-        vectors = embedder.embed([chunk.content for chunk in chunks]) if chunks else []
+        vectors = embedder.embed([chunk.content for chunk in chunks])
     except EmbeddingError as error:
         logger.error(
             "조각 임베딩 실패: document_id=%s, analysis_id=%s, error_code=%s",
