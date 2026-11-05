@@ -84,8 +84,9 @@ class DocumentChunkRepository(Protocol):
         vectors: Sequence[Sequence[float]],
         model_name: str,
     ) -> ChunkIndexSkipReason | None:
-        """이 문서의 이전 조각·임베딩을 지우고 새 것을 한 트랜잭션에서 넣는다.
+        """이 문서의 조각 임베딩을 지우고 새 조각·임베딩을 한 트랜잭션에서 넣는다.
 
+        이전 분석의 조각 행은 인용될 수 있어 남기고 임베딩만 지운다.
         저장하면 None이다. 그사이 문서가 삭제됐으면 DELETED, target 분석이 더 이상 최신 성공
         분석이 아니면 STALE_ANALYSIS를 반환하고 아무것도 바꾸지 않는다.
         중간에 실패하면 전부 롤백되어 이전 것이 남는다.

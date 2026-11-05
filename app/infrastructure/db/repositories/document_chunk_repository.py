@@ -133,10 +133,10 @@ class SqlAlchemyDocumentChunkRepository:
         vectors: Sequence[Sequence[float]],
         model_name: str,
     ) -> ChunkIndexSkipReason | None:
-        """이 문서의 이전 조각·임베딩을 지우고 새 것을 한 트랜잭션에서 넣는다.
+        """이 문서의 조각 임베딩을 지우고 새 조각·임베딩을 한 트랜잭션에서 넣는다.
 
-        같은 분석을 다시 실행해도 (analysis_id, chunk_index) 유일 키에 걸리지 않게 먼저 지운다.
-        이전 조각이 인용돼 FK에 막히면 예외가 나고 전부 롤백되어 이전 것이 남는다.
+        이전 분석의 조각 행은 남기고 임베딩만 지운다. 같은 분석의 조각은 유일 키 때문에 지우고
+        다시 넣으며, 그 조각이 인용돼 FK에 막히면 예외가 나고 전부 롤백되어 이전 것이 남는다.
         """
         if len(chunks) != len(vectors):
             raise ValueError("조각 수와 벡터 수가 다릅니다")
@@ -144,7 +144,7 @@ class SqlAlchemyDocumentChunkRepository:
             reason = _lock_latest_target(session, target)
             if reason is not None:
                 return reason
-            _delete_document_chunks(session, target.document_id)
+            _delete_document_chunks(session, target)
             chunk_ids = _insert_chunks(session, target, chunks)
             _insert_embeddings(session, target, chunk_ids, vectors, model_name)
         return None
@@ -285,10 +285,11 @@ def _latest_analysis(session: Session, document_id: UUID) -> Row | None:
     ).one_or_none()
 
 
-def _delete_document_chunks(session: Session, document_id: UUID) -> None:
-    # 같은 분석 재실행과 새 분석 행 재분석을 함께 다루려고 문서의 모든 분석을 대상으로 한다.
+def _delete_document_chunks(session: Session, target: ChunkIndexTarget) -> None:
+    # 검색은 임베딩으로 하므로 문서의 모든 분석 조각에서 임베딩을 지워
+    # 이전 분석이 검색되지 않게 한다.
     analysis_ids = select(DocumentAnalysisModel.id).where(
-        DocumentAnalysisModel.document_id == document_id
+        DocumentAnalysisModel.document_id == target.document_id
     )
     chunk_ids = select(DocumentChunkModel.id).where(
         DocumentChunkModel.analysis_id.in_(analysis_ids)
@@ -298,8 +299,11 @@ def _delete_document_chunks(session: Session, document_id: UUID) -> None:
             _EMBEDDINGS.c.source_type == SOURCE_TYPE, _EMBEDDINGS.c.source_id.in_(chunk_ids)
         )
     )
+    # 이전 분석의 조각 행은 설명·근거가 인용할 수 있어(FK, ON DELETE 없음) 남긴다.
+    # target 분석의 조각만 지워 같은 분석 재실행이 (analysis_id, chunk_index) 유일 키에
+    # 걸리지 않게 한다.
     session.execute(
-        delete(DocumentChunkModel).where(DocumentChunkModel.analysis_id.in_(analysis_ids))
+        delete(DocumentChunkModel).where(DocumentChunkModel.analysis_id == target.analysis_id)
     )
 
 

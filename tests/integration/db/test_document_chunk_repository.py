@@ -244,19 +244,55 @@ def test_rerun_of_same_analysis_replaces_previous_chunks(
     assert count_chunk_embeddings(db_session, document_id) == 1
 
 
-def test_new_analysis_removes_chunks_of_previous_analysis(
+def test_new_analysis_keeps_previous_chunks_without_embeddings(
     db_session: Session, repository: SqlAlchemyDocumentChunkRepository
 ) -> None:
-    """재분석으로 새 분석 행이 생기면 이전 분석의 조각과 임베딩이 지워진다."""
+    """재분석으로 새 분석 행이 생기면 이전 분석의 조각 행은 남고 임베딩만 지워진다."""
     document_id = make_ready_document(db_session, {1: "원문"})
-    store(repository, require_target(repository, document_id), "이전 조각")
+    old_target = require_target(repository, document_id)
+    store(repository, old_target, "이전 조각")
     new_analysis_id = add_newer_analysis(db_session, document_id, "SUCCEEDED")
 
     assert store(repository, require_target(repository, document_id), "새 조각") is None
 
-    rows = stored_rows(db_session, document_id)
-    assert [(row.analysis_id, row.content) for row in rows] == [(new_analysis_id, "새 조각")]
+    rows = sorted(
+        (
+            (row.analysis_id, row.content, row.model_name)
+            for row in stored_rows(db_session, document_id)
+        ),
+        key=lambda row: row[1],
+    )
+    assert rows == [
+        (new_analysis_id, "새 조각", MODEL_NAME),
+        (old_target.analysis_id, "이전 조각", None),
+    ]
     assert count_chunk_embeddings(db_session, document_id) == 1
+
+
+def test_cited_previous_analysis_chunk_does_not_block_reanalysis(
+    db_session: Session, repository: SqlAlchemyDocumentChunkRepository
+) -> None:
+    """이전 분석의 조각이 인용돼 있어도 새 분석으로 교체되고 인용은 그대로 남는다."""
+    document_id = make_ready_document(db_session, {1: "원문"})
+    store(repository, require_target(repository, document_id), "인용된 조각")
+    cite_first_chunk(db_session, document_id)
+    add_newer_analysis(db_session, document_id, "SUCCEEDED")
+
+    assert store(repository, require_target(repository, document_id), "새 조각") is None
+
+    contents = sorted(row.content for row in stored_rows(db_session, document_id))
+    assert contents == ["새 조각", "인용된 조각"]
+    assert count_chunk_embeddings(db_session, document_id) == 1
+    cited = db_session.execute(
+        text(
+            "SELECT count(*) FROM explanation_citations ec"
+            " JOIN document_chunks c ON c.id = ec.chunk_id"
+            " JOIN document_analyses a ON a.id = c.analysis_id"
+            " WHERE a.document_id = :id AND c.content = '인용된 조각'"
+        ),
+        {"id": document_id},
+    ).scalar_one()
+    assert cited == 1
 
 
 def test_failed_insert_keeps_previous_chunks(
