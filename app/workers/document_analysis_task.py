@@ -149,12 +149,13 @@ def _log_index_outcome(
     logger.log(
         level,
         "조각 색인 결과: document_id=%s, request_id=%s, status=%s, reason=%s, chunks=%d,"
-        " succeeded_pages=%d, failed_pages=%d, error_code=%s",
+        " embedded=%d, succeeded_pages=%d, failed_pages=%d, error_code=%s",
         document_id,
         request_id,
         outcome.status,
         outcome.reason,
         outcome.chunk_count,
+        outcome.embedded_count,
         outcome.succeeded_pages,
         outcome.failed_pages,
         outcome.error_code,
@@ -193,7 +194,9 @@ def _resume_unindexed_documents(executor: Executor) -> None:
             return
         document_ids = SqlAlchemyDocumentChunkRepository(
             get_session_factory()
-        ).find_unindexed_document_ids(limit=settings.document_analysis_resume_limit)
+        ).find_unindexed_document_ids(
+            model_name=settings.embedding_model, limit=settings.document_analysis_resume_limit
+        )
         for document_id in document_ids:
             executor.submit(run_chunk_indexing, document_id, None)
     except Exception as error:

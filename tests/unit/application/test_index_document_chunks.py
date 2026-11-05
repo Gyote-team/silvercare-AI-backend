@@ -1,6 +1,7 @@
 """조각 색인 유스케이스 테스트. 저장소와 임베더는 가짜로 바꾼다."""
 
 from collections.abc import Sequence
+from dataclasses import replace
 from uuid import UUID, uuid4
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from app.application.ports.document_chunk_repository import (
     ChunkIndexSkipReason,
     ChunkIndexTarget,
+    StoredChunk,
 )
 from app.application.ports.text_embedder import (
     EMBEDDING_DIMENSIONS,
@@ -36,10 +38,24 @@ class FakeRepository:
         self.target = target
         self.replace_result = replace_result
         self.replace_calls: list[tuple[list[DocumentChunk], list[list[float]], str]] = []
+        self.fill_calls: list[tuple[list[UUID], int, str]] = []
 
-    def find_index_target(self, document_id: UUID) -> ChunkIndexTarget | ChunkIndexSkipReason:
+    def find_index_target(
+        self, document_id: UUID, model_name: str
+    ) -> ChunkIndexTarget | ChunkIndexSkipReason:
         """정해 둔 대상이나 건너뛸 이유를 돌려준다."""
         return self.target
+
+    def fill_missing_embeddings(
+        self,
+        target: ChunkIndexTarget,
+        chunk_ids: Sequence[UUID],
+        vectors: Sequence[Sequence[float]],
+        model_name: str,
+    ) -> ChunkIndexSkipReason | None:
+        """받은 조각 id와 벡터 수를 기록하고 정해 둔 결과를 돌려준다."""
+        self.fill_calls.append((list(chunk_ids), len(vectors), model_name))
+        return self.replace_result
 
     def replace_chunks(
         self,
@@ -52,7 +68,7 @@ class FakeRepository:
         self.replace_calls.append((list(chunks), [list(v) for v in vectors], model_name))
         return self.replace_result
 
-    def find_unindexed_document_ids(self, *, limit: int) -> list[UUID]:
+    def find_unindexed_document_ids(self, *, model_name: str, limit: int) -> list[UUID]:
         """쓰지 않는다."""
         return []
 
@@ -102,7 +118,11 @@ def test_chunks_are_embedded_and_replaced() -> None:
     outcome = run(repository, embedder)
 
     assert outcome == ChunkIndexOutcome(
-        status=ChunkIndexStatus.INDEXED, chunk_count=2, succeeded_pages=2, failed_pages=1
+        status=ChunkIndexStatus.INDEXED,
+        chunk_count=2,
+        embedded_count=2,
+        succeeded_pages=2,
+        failed_pages=1,
     )
     assert embedder.calls == [[SOURCE_TEXT, "둘째 쪽"]]
     chunks, vectors, model_name = repository.replace_calls[0]
@@ -167,6 +187,59 @@ def test_replace_reason_is_returned(reason: ChunkIndexSkipReason) -> None:
         ChunkIndexStatus.SKIPPED,
         reason,
         0,
+    )
+
+
+def test_stored_chunks_fill_only_missing_embeddings() -> None:
+    """조각이 이미 있으면 다시 나누지 않고 임베딩이 없는 조각만 임베딩해 채운다."""
+    missing = (StoredChunk(uuid4(), "둘째 조각"), StoredChunk(uuid4(), "넷째 조각"))
+    target = replace(make_target(SOURCE_TEXT), stored_chunk_count=4, missing_chunks=missing)
+    repository = FakeRepository(target)
+    embedder = FakeEmbedder()
+
+    outcome = run(repository, embedder)
+
+    assert embedder.calls == [["둘째 조각", "넷째 조각"]]
+    assert repository.fill_calls == [([chunk.chunk_id for chunk in missing], 2, "fake-embedding")]
+    assert repository.replace_calls == []
+    assert (outcome.status, outcome.chunk_count, outcome.embedded_count) == (
+        ChunkIndexStatus.INDEXED,
+        4,
+        2,
+    )
+
+
+def test_fully_indexed_chunks_need_no_embedding() -> None:
+    """모든 조각에 임베딩이 있으면 임베더도 저장도 부르지 않고 INDEXED다."""
+    target = replace(make_target(SOURCE_TEXT), stored_chunk_count=3)
+    repository = FakeRepository(target)
+    embedder = FakeEmbedder()
+
+    outcome = run(repository, embedder)
+
+    assert embedder.calls == []
+    assert repository.fill_calls == []
+    assert (outcome.status, outcome.chunk_count, outcome.embedded_count) == (
+        ChunkIndexStatus.INDEXED,
+        3,
+        0,
+    )
+
+
+def test_stale_fill_is_skipped() -> None:
+    """채우는 사이 새 분석이 생겼으면 저장소가 준 이유로 건너뛴다."""
+    target = replace(
+        make_target(SOURCE_TEXT),
+        stored_chunk_count=1,
+        missing_chunks=(StoredChunk(uuid4(), "조각"),),
+    )
+    repository = FakeRepository(target, replace_result=ChunkIndexSkipReason.STALE_ANALYSIS)
+
+    outcome = run(repository, FakeEmbedder())
+
+    assert (outcome.status, outcome.reason) == (
+        ChunkIndexStatus.SKIPPED,
+        ChunkIndexSkipReason.STALE_ANALYSIS,
     )
 
 

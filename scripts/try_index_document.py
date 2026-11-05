@@ -62,6 +62,7 @@ def main() -> None:
 
     print(
         f"status: {outcome.status}, reason: {outcome.reason}, chunks: {outcome.chunk_count},"
+        f" embedded: {outcome.embedded_count},"
         f" pages: {outcome.succeeded_pages} succeeded / {outcome.failed_pages} failed"
     )
     if outcome.error_code is not None:

@@ -3,11 +3,30 @@
 from collections.abc import Sequence
 from uuid import UUID, uuid4
 
-from sqlalchemy import Row, Select, column, delete, exists, func, insert, select, table, text
+from sqlalchemy import (
+    Exists,
+    Row,
+    Select,
+    and_,
+    column,
+    delete,
+    exists,
+    func,
+    insert,
+    or_,
+    select,
+    table,
+    text,
+)
 from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.application.ports.document_chunk_repository import ChunkIndexSkipReason, ChunkIndexTarget
+from app.application.ports.document_chunk_repository import (
+    ChunkIndexSkipReason,
+    ChunkIndexTarget,
+    StoredChunk,
+)
+from app.application.ports.text_embedder import EMBEDDING_DIMENSIONS
 from app.domain.document.document_analysis import AnalysisStatus, DocumentStatus
 from app.domain.document.document_chunk import DocumentChunk, PageText
 from app.domain.document.document_page import PageOcrStatus
@@ -24,7 +43,13 @@ _INDEXABLE = (
     DocumentModel.deleted_at.is_(None),
 )
 # embeddings는 vector 칼럼이 있어 ORM 매핑 없이 지우기·조회에 쓰는 칼럼만 적는다.
-_EMBEDDINGS = table("embeddings", column("source_type"), column("source_id"))
+_EMBEDDINGS = table(
+    "embeddings",
+    column("source_type"),
+    column("source_id"),
+    column("model_name"),
+    column("dimensions"),
+)
 # vector 값은 pgvector 패키지 없이 '[1.0,2.0]' 문자열을 CAST로 넣는다.
 _INSERT_EMBEDDING = text(
     "INSERT INTO embeddings"
@@ -40,8 +65,10 @@ class SqlAlchemyDocumentChunkRepository:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
 
-    def find_index_target(self, document_id: UUID) -> ChunkIndexTarget | ChunkIndexSkipReason:
-        """READY·NEEDS_REVIEW 문서의 최신 성공 분석과 원문이 있는 페이지를 읽는다."""
+    def find_index_target(
+        self, document_id: UUID, model_name: str
+    ) -> ChunkIndexTarget | ChunkIndexSkipReason:
+        """READY·NEEDS_REVIEW 문서의 최신 성공 분석, 원문이 있는 페이지, 저장된 조각을 읽는다."""
         with self._session_factory() as session:
             document = session.execute(
                 select(
@@ -77,6 +104,15 @@ class SqlAlchemyDocumentChunkRepository:
                     DocumentPageModel.ocr_status == PageOcrStatus.FAILED,
                 )
             ).scalar_one()
+            stored = session.execute(
+                select(
+                    DocumentChunkModel.id,
+                    DocumentChunkModel.content,
+                    _has_current_embedding(model_name).label("embedded"),
+                )
+                .where(DocumentChunkModel.analysis_id == analysis.id)
+                .order_by(DocumentChunkModel.chunk_index)
+            ).all()
         return ChunkIndexTarget(
             document_id=document_id,
             analysis_id=analysis.id,
@@ -84,6 +120,10 @@ class SqlAlchemyDocumentChunkRepository:
             visit_id=document.visit_id,
             pages=tuple(PageText(page.id, page.page_no, page.ocr_text) for page in pages),
             failed_page_count=failed_page_count,
+            stored_chunk_count=len(stored),
+            missing_chunks=tuple(
+                StoredChunk(row.id, row.content) for row in stored if not row.embedded
+            ),
         )
 
     def replace_chunks(
@@ -101,29 +141,66 @@ class SqlAlchemyDocumentChunkRepository:
         if len(chunks) != len(vectors):
             raise ValueError("조각 수와 벡터 수가 다릅니다")
         with self._session_factory.begin() as session:
-            # 문서 행을 잠가 같은 문서의 교체와 삭제가 겹치지 않게 한다.
-            locked = session.execute(
-                select(DocumentModel.id)
-                .where(DocumentModel.id == target.document_id, *_INDEXABLE)
-                .with_for_update()
-            ).scalar_one_or_none()
-            if locked is None:
-                return ChunkIndexSkipReason.DELETED
-            latest = _latest_analysis(session, target.document_id)
-            if (
-                latest is None
-                or latest.id != target.analysis_id
-                or latest.status != AnalysisStatus.SUCCEEDED
-            ):
-                return ChunkIndexSkipReason.STALE_ANALYSIS
+            reason = _lock_latest_target(session, target)
+            if reason is not None:
+                return reason
             _delete_document_chunks(session, target.document_id)
-            _insert_chunks(session, target, chunks, vectors, model_name)
+            chunk_ids = _insert_chunks(session, target, chunks)
+            _insert_embeddings(session, target, chunk_ids, vectors, model_name)
         return None
 
-    def find_unindexed_document_ids(self, *, limit: int) -> list[UUID]:
-        """분석은 성공했지만 최신 분석의 조각 임베딩이 없는 문서 id를 오래된 분석부터 읽는다.
+    def fill_missing_embeddings(
+        self,
+        target: ChunkIndexTarget,
+        chunk_ids: Sequence[UUID],
+        vectors: Sequence[Sequence[float]],
+        model_name: str,
+    ) -> ChunkIndexSkipReason | None:
+        """target 분석의 조각 중 아직 현재 기준 임베딩이 없는 것에만 임베딩을 넣는다."""
+        if len(chunk_ids) != len(vectors):
+            raise ValueError("조각 수와 벡터 수가 다릅니다")
+        with self._session_factory.begin() as session:
+            reason = _lock_latest_target(session, target)
+            if reason is not None:
+                return reason
+            # 잠근 뒤 다시 골라, 그사이 다른 실행이 채운 조각에 같은 임베딩이 겹치지 않게 한다.
+            still_missing = set(
+                session.execute(
+                    select(DocumentChunkModel.id).where(
+                        DocumentChunkModel.id.in_(chunk_ids),
+                        DocumentChunkModel.analysis_id == target.analysis_id,
+                        ~_has_current_embedding(model_name),
+                    )
+                ).scalars()
+            )
+            if not still_missing:
+                return None
+            # 남은 임베딩은 다른 모델·차원 것뿐이므로 지우고 현재 기준으로 바꾼다.
+            session.execute(
+                delete(_EMBEDDINGS).where(
+                    _EMBEDDINGS.c.source_type == SOURCE_TYPE,
+                    _EMBEDDINGS.c.source_id.in_(still_missing),
+                )
+            )
+            pairs = [
+                (chunk_id, vector)
+                for chunk_id, vector in zip(chunk_ids, vectors, strict=True)
+                if chunk_id in still_missing
+            ]
+            _insert_embeddings(
+                session,
+                target,
+                [chunk_id for chunk_id, _ in pairs],
+                [vector for _, vector in pairs],
+                model_name,
+            )
+        return None
 
-        원문이 있는 SUCCEEDED 페이지가 없는 문서는 조각이 생기지 않으므로 고르지 않는다.
+    def find_unindexed_document_ids(self, *, model_name: str, limit: int) -> list[UUID]:
+        """분석은 성공했지만 최신 분석이 model_name 기준으로 색인되지 않은 문서 id를 읽는다.
+
+        오래된 분석부터 고른다. 최신 분석의 조각이 없으면 원문이 있는 SUCCEEDED 페이지가 있을
+        때만, 조각이 있으면 현재 기준 임베딩이 없는 조각이 하나라도 있을 때 고른다.
         """
         latest = _latest_analyses().subquery()
         has_text = exists().where(
@@ -131,12 +208,12 @@ class SqlAlchemyDocumentChunkRepository:
             DocumentPageModel.ocr_status == PageOcrStatus.SUCCEEDED,
             DocumentPageModel.ocr_text.is_not(None),
         )
-        has_embedding = (
+        has_chunks = exists().where(DocumentChunkModel.analysis_id == latest.c.id)
+        has_missing = (
             select(DocumentChunkModel.id)
-            .join(_EMBEDDINGS, _EMBEDDINGS.c.source_id == DocumentChunkModel.id)
             .where(
                 DocumentChunkModel.analysis_id == latest.c.id,
-                _EMBEDDINGS.c.source_type == SOURCE_TYPE,
+                ~_has_current_embedding(model_name),
             )
             .exists()
         )
@@ -147,13 +224,41 @@ class SqlAlchemyDocumentChunkRepository:
                 .where(
                     *_INDEXABLE,
                     latest.c.status == AnalysisStatus.SUCCEEDED,
-                    has_text,
-                    ~has_embedding,
+                    or_(and_(~has_chunks, has_text), has_missing),
                 )
                 .order_by(latest.c.created_at)
                 .limit(limit)
             ).scalars()
             return list(document_ids)
+
+
+def _has_current_embedding(model_name: str) -> Exists:
+    # 바깥 쿼리의 조각 행에 현재 모델·차원의 임베딩이 있는지. 다른 모델 것은 색인으로 보지 않는다.
+    return exists().where(
+        _EMBEDDINGS.c.source_type == SOURCE_TYPE,
+        _EMBEDDINGS.c.source_id == DocumentChunkModel.id,
+        _EMBEDDINGS.c.model_name == model_name,
+        _EMBEDDINGS.c.dimensions == EMBEDDING_DIMENSIONS,
+    )
+
+
+def _lock_latest_target(session: Session, target: ChunkIndexTarget) -> ChunkIndexSkipReason | None:
+    # 문서 행을 잠가 같은 문서의 교체·채우기와 삭제가 겹치지 않게 하고, 잠금 안에서 최신인지 본다.
+    locked = session.execute(
+        select(DocumentModel.id)
+        .where(DocumentModel.id == target.document_id, *_INDEXABLE)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if locked is None:
+        return ChunkIndexSkipReason.DELETED
+    latest = _latest_analysis(session, target.document_id)
+    if (
+        latest is None
+        or latest.id != target.analysis_id
+        or latest.status != AnalysisStatus.SUCCEEDED
+    ):
+        return ChunkIndexSkipReason.STALE_ANALYSIS
+    return None
 
 
 def _latest_analyses() -> Select:
@@ -199,29 +304,36 @@ def _delete_document_chunks(session: Session, document_id: UUID) -> None:
 
 
 def _insert_chunks(
+    session: Session, target: ChunkIndexTarget, chunks: Sequence[DocumentChunk]
+) -> list[UUID]:
+    chunk_ids = [uuid4() for _ in chunks]
+    if chunks:
+        session.execute(
+            insert(DocumentChunkModel),
+            [
+                {
+                    "id": chunk_id,
+                    "analysis_id": target.analysis_id,
+                    "page_id": chunk.page_id,
+                    "chunk_index": chunk.chunk_index,
+                    "content": chunk.content,
+                    "token_count": chunk.token_count,
+                }
+                for chunk_id, chunk in zip(chunk_ids, chunks, strict=True)
+            ],
+        )
+    return chunk_ids
+
+
+def _insert_embeddings(
     session: Session,
     target: ChunkIndexTarget,
-    chunks: Sequence[DocumentChunk],
+    chunk_ids: Sequence[UUID],
     vectors: Sequence[Sequence[float]],
     model_name: str,
 ) -> None:
-    if not chunks:
+    if not chunk_ids:
         return
-    chunk_ids = [uuid4() for _ in chunks]
-    session.execute(
-        insert(DocumentChunkModel),
-        [
-            {
-                "id": chunk_id,
-                "analysis_id": target.analysis_id,
-                "page_id": chunk.page_id,
-                "chunk_index": chunk.chunk_index,
-                "content": chunk.content,
-                "token_count": chunk.token_count,
-            }
-            for chunk_id, chunk in zip(chunk_ids, chunks, strict=True)
-        ],
-    )
     session.execute(
         _INSERT_EMBEDDING,
         [

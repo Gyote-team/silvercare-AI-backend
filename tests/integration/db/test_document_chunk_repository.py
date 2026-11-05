@@ -115,7 +115,7 @@ def require_target(
     repository: SqlAlchemyDocumentChunkRepository, document_id: UUID
 ) -> ChunkIndexTarget:
     """색인 대상을 읽고, 없으면 테스트를 실패시킨다."""
-    target = repository.find_index_target(document_id)
+    target = repository.find_index_target(document_id, MODEL_NAME)
     assert isinstance(target, ChunkIndexTarget)
     return target
 
@@ -147,7 +147,9 @@ def test_no_target_when_latest_analysis_is_not_succeeded(
     document_id = make_ready_document(db_session, {1: "원문"})
     add_newer_analysis(db_session, document_id, "RUNNING")
 
-    assert repository.find_index_target(document_id) == ChunkIndexSkipReason.NOT_ANALYZED
+    assert (
+        repository.find_index_target(document_id, MODEL_NAME) == ChunkIndexSkipReason.NOT_ANALYZED
+    )
 
 
 def test_no_target_when_document_is_not_ready(
@@ -159,12 +161,14 @@ def test_no_target_when_document_is_not_ready(
         text("UPDATE documents SET status = 'PROCESSING' WHERE id = :id"), {"id": document_id}
     )
 
-    assert repository.find_index_target(document_id) == ChunkIndexSkipReason.NOT_ANALYZED
+    assert (
+        repository.find_index_target(document_id, MODEL_NAME) == ChunkIndexSkipReason.NOT_ANALYZED
+    )
 
 
 def test_no_target_when_document_is_missing(repository: SqlAlchemyDocumentChunkRepository) -> None:
     """없는 문서는 삭제된 문서와 같이 DELETED다."""
-    assert repository.find_index_target(uuid4()) == ChunkIndexSkipReason.DELETED
+    assert repository.find_index_target(uuid4(), MODEL_NAME) == ChunkIndexSkipReason.DELETED
 
 
 def test_index_target_counts_failed_pages(
@@ -205,7 +209,7 @@ def test_no_target_when_document_is_deleted(
     document_id = make_ready_document(db_session, {1: "원문"})
     delete_document(db_session, document_id, kind)
 
-    assert repository.find_index_target(document_id) == ChunkIndexSkipReason.DELETED
+    assert repository.find_index_target(document_id, MODEL_NAME) == ChunkIndexSkipReason.DELETED
 
 
 def test_replace_stores_chunks_with_embeddings(
@@ -321,7 +325,9 @@ def test_deleted_document_is_not_unindexed_candidate(
     document_id = make_ready_document(db_session, {1: "원문"})
     delete_document(db_session, document_id, kind)
 
-    assert document_id not in repository.find_unindexed_document_ids(limit=10000)
+    assert document_id not in repository.find_unindexed_document_ids(
+        model_name=MODEL_NAME, limit=10000
+    )
 
 
 def test_health_record_embeddings_are_untouched(
@@ -367,7 +373,7 @@ def test_unindexed_documents_are_found(
     running = make_ready_document(db_session, {1: "원문"})
     add_newer_analysis(db_session, running, "RUNNING")
 
-    found = repository.find_unindexed_document_ids(limit=10000)
+    found = repository.find_unindexed_document_ids(model_name=MODEL_NAME, limit=10000)
 
     assert unindexed in found
     assert indexed not in found
@@ -378,9 +384,8 @@ def test_unindexed_documents_are_found(
 class FakeEmbedder:
     """입력 수만 기록하고 768차원 합성 벡터를 돌려주는 가짜 임베더. 외부 API를 부르지 않는다."""
 
-    model_name = MODEL_NAME
-
-    def __init__(self) -> None:
+    def __init__(self, model_name: str = MODEL_NAME) -> None:
+        self.model_name = model_name
         self.calls: list[list[str]] = []
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
@@ -413,6 +418,132 @@ def test_new_analysis_without_chunks_keeps_previous_index(
     assert len(before) == 1
     assert stored_rows(db_session, document_id) == before
     assert count_chunk_embeddings(db_session, document_id) == 1
+
+
+def chunk_ids(db_session: Session, document_id: UUID) -> list[UUID]:
+    """문서의 조각 id를 조각 번호 순서로 읽는다."""
+    return list(
+        db_session.execute(
+            text(
+                "SELECT c.id FROM document_chunks c"
+                " JOIN document_analyses a ON a.id = c.analysis_id"
+                " WHERE a.document_id = :id ORDER BY c.chunk_index"
+            ),
+            {"id": document_id},
+        ).scalars()
+    )
+
+
+def drop_embedding_of_chunk(db_session: Session, document_id: UUID, chunk_index: int) -> None:
+    """문서의 chunk_index 조각에 달린 임베딩만 지워 부분 색인 상태를 만든다."""
+    db_session.execute(
+        text(
+            "DELETE FROM embeddings e USING document_chunks c, document_analyses a"
+            " WHERE e.source_type = 'DOCUMENT_CHUNK' AND e.source_id = c.id"
+            " AND a.id = c.analysis_id AND a.document_id = :id AND c.chunk_index = :index"
+        ),
+        {"id": document_id, "index": chunk_index},
+    )
+
+
+def test_partially_indexed_document_is_refilled_once(
+    db_session: Session, repository: SqlAlchemyDocumentChunkRepository
+) -> None:
+    """임베딩이 빠진 조각이 있으면 목록에 뜨고, 재색인은 빠진 조각만 임베딩한다.
+
+    다시 실행하면 목록에서 빠지고 임베더를 부르지 않는다.
+    """
+    document_id = make_ready_document(db_session, {1: "원문"})
+    store(repository, require_target(repository, document_id), "첫 조각", "둘째 조각", "셋째 조각")
+    drop_embedding_of_chunk(db_session, document_id, 1)
+    chunk_ids_before = chunk_ids(db_session, document_id)
+
+    assert document_id in repository.find_unindexed_document_ids(model_name=MODEL_NAME, limit=10000)
+
+    embedder = FakeEmbedder()
+    outcome = index_document_chunks(document_id, repository=repository, embedder=embedder)
+
+    assert embedder.calls == [["둘째 조각"]]
+    assert (outcome.status, outcome.chunk_count, outcome.embedded_count) == (
+        ChunkIndexStatus.INDEXED,
+        3,
+        1,
+    )
+    rows = stored_rows(db_session, document_id)
+    # 조각 행은 지우지 않고 그대로 둔다.
+    assert chunk_ids(db_session, document_id) == chunk_ids_before
+    assert all(row.model_name == MODEL_NAME for row in rows)
+    assert count_chunk_embeddings(db_session, document_id) == 3
+    assert document_id not in repository.find_unindexed_document_ids(
+        model_name=MODEL_NAME, limit=10000
+    )
+
+    again = index_document_chunks(document_id, repository=repository, embedder=embedder)
+
+    assert len(embedder.calls) == 1
+    assert (again.status, again.embedded_count) == (ChunkIndexStatus.INDEXED, 0)
+
+
+def test_other_model_embeddings_are_not_indexed(
+    db_session: Session, repository: SqlAlchemyDocumentChunkRepository
+) -> None:
+    """다른 모델의 임베딩만 있으면 목록에 뜨고, 채우면 조각마다 현재 모델 임베딩 하나로 바뀐다."""
+    document_id = make_ready_document(db_session, {1: "원문"})
+    store(repository, require_target(repository, document_id), "첫 조각", "둘째 조각")
+
+    assert document_id in repository.find_unindexed_document_ids(
+        model_name="other-model", limit=10000
+    )
+
+    embedder = FakeEmbedder("other-model")
+    index_document_chunks(document_id, repository=repository, embedder=embedder)
+
+    assert embedder.calls == [["첫 조각", "둘째 조각"]]
+    assert [row.model_name for row in stored_rows(db_session, document_id)] == [
+        "other-model",
+        "other-model",
+    ]
+    assert count_chunk_embeddings(db_session, document_id) == 2
+
+
+def test_fill_skips_chunks_filled_meanwhile(
+    db_session: Session, repository: SqlAlchemyDocumentChunkRepository
+) -> None:
+    """읽은 뒤 다른 실행이 채운 조각에는 임베딩을 겹쳐 넣지 않는다."""
+    document_id = make_ready_document(db_session, {1: "원문"})
+    store(repository, require_target(repository, document_id), "첫 조각")
+    drop_embedding_of_chunk(db_session, document_id, 0)
+    target = require_target(repository, document_id)
+    [missing] = target.missing_chunks
+    # 다른 실행이 먼저 채운 상황.
+    assert (
+        repository.fill_missing_embeddings(target, [missing.chunk_id], vectors(1), MODEL_NAME)
+        is None
+    )
+
+    assert (
+        repository.fill_missing_embeddings(target, [missing.chunk_id], vectors(1), MODEL_NAME)
+        is None
+    )
+    assert count_chunk_embeddings(db_session, document_id) == 1
+
+
+def test_fill_for_superseded_analysis_changes_nothing(
+    db_session: Session, repository: SqlAlchemyDocumentChunkRepository
+) -> None:
+    """채우는 사이 새 분석이 생겼으면 아무것도 넣지 않고 STALE_ANALYSIS를 반환한다."""
+    document_id = make_ready_document(db_session, {1: "원문"})
+    store(repository, require_target(repository, document_id), "첫 조각")
+    drop_embedding_of_chunk(db_session, document_id, 0)
+    target = require_target(repository, document_id)
+    add_newer_analysis(db_session, document_id, "SUCCEEDED")
+
+    reason = repository.fill_missing_embeddings(
+        target, [target.missing_chunks[0].chunk_id], vectors(1), MODEL_NAME
+    )
+
+    assert reason == ChunkIndexSkipReason.STALE_ANALYSIS
+    assert count_chunk_embeddings(db_session, document_id) == 0
 
 
 def count_chunk_embeddings(db_session: Session, document_id: UUID) -> int:
