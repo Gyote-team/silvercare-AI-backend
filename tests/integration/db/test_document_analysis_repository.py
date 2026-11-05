@@ -600,6 +600,87 @@ def test_old_run_cannot_overwrite_result_of_new_run(
     assert fetch_analysis(db_session, target.analysis_id).status == AnalysisStatus.SUCCEEDED
 
 
+def start_newer_analysis_with_result(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, document_id: UUID
+) -> AnalysisTarget:
+    """같은 문서에 더 늦게 만든 분석 B를 넣고 시작해 NEEDS_REVIEW와 B 원문으로 끝낸다."""
+    db_session.execute(
+        text(
+            "INSERT INTO document_analyses (id, document_id, parser_version, created_at)"
+            " VALUES (:id, :document_id, 'v1', CURRENT_TIMESTAMP + INTERVAL '1 second')"
+        ),
+        {"id": uuid4(), "document_id": document_id},
+    )
+    newer = repository.find_target(document_id)
+    assert newer is not None
+    newer_started_at = STARTED_AT + timedelta(minutes=1)
+    assert repository.mark_started(newer, newer_started_at) is True
+    assert (
+        repository.save_result(
+            newer,
+            newer_started_at,
+            DocumentStatus.NEEDS_REVIEW,
+            {1: make_extraction(make_item("b"), raw_text="B 원문")},
+            "fake-model",
+            COMPLETED_AT,
+        )
+        is True
+    )
+    return newer
+
+
+def test_late_older_result_does_not_overwrite_newer_pages(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
+) -> None:
+    """이전 분석 A가 새 분석 B보다 늦게 끝나도 B의 페이지 원문과 문서 상태는 그대로다.
+
+    A는 RUNNING으로 남지 않게 자기 항목과 SUCCEEDED만 기록한다.
+    """
+    repository.mark_started(target, STARTED_AT)
+    newer = start_newer_analysis_with_result(db_session, repository, target.document_id)
+    pages_before = fetch_pages(db_session, target.document_id)
+    document_before = fetch_document(db_session, target.document_id)
+    late_at = COMPLETED_AT + timedelta(minutes=5)
+
+    assert (
+        repository.save_result(
+            target,
+            STARTED_AT,
+            DocumentStatus.READY,
+            {1: make_extraction(make_item("a"), raw_text="A 원문")},
+            "fake-model",
+            late_at,
+        )
+        is True
+    )
+
+    assert fetch_pages(db_session, target.document_id) == pages_before
+    assert pages_before[0] == (1, PageOcrStatus.SUCCEEDED, "B 원문")
+    assert fetch_document(db_session, target.document_id) == document_before
+    assert document_before.status == DocumentStatus.NEEDS_REVIEW
+    older = fetch_analysis(db_session, target.analysis_id)
+    assert (older.status, older.completed_at) == (AnalysisStatus.SUCCEEDED, late_at)
+    assert [row.source_text for row in fetch_items(db_session, target.analysis_id)] == ["a"]
+    assert [row.source_text for row in fetch_items(db_session, newer.analysis_id)] == ["b"]
+
+
+def test_late_older_failure_does_not_clear_newer_pages(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
+) -> None:
+    """이전 분석 A가 새 분석 B보다 늦게 실패해도 B의 페이지 원문과 문서 상태는 그대로다."""
+    repository.mark_started(target, STARTED_AT)
+    start_newer_analysis_with_result(db_session, repository, target.document_id)
+    pages_before = fetch_pages(db_session, target.document_id)
+    document_before = fetch_document(db_session, target.document_id)
+
+    assert repository.mark_failed(target, STARTED_AT, FAILURE, COMPLETED_AT) is True
+
+    assert fetch_pages(db_session, target.document_id) == pages_before
+    assert fetch_document(db_session, target.document_id) == document_before
+    older = fetch_analysis(db_session, target.analysis_id)
+    assert (older.status, older.error_code) == (AnalysisStatus.FAILED, "VLM_TIMEOUT")
+
+
 SETUP_FAILURE = AnalysisFailure(
     error_code=AnalysisErrorCode.AI_GENERATION_FAILED,
     failed_step=FailedStep.OBJECT_FETCH,
@@ -613,8 +694,7 @@ def test_mark_failed_before_start_records_pending_analysis(
 ) -> None:
     """시작 전 실패는 PENDING 분석과 문서를 FAILED로 기록하고 페이지는 그대로 둔다."""
     assert (
-        repository.mark_failed_before_start(target.document_id, SETUP_FAILURE, COMPLETED_AT)
-        is True
+        repository.mark_failed_before_start(target.document_id, SETUP_FAILURE, COMPLETED_AT) is True
     )
 
     document = fetch_document(db_session, target.document_id)
@@ -700,9 +780,7 @@ def test_find_resumable_includes_old_pending_and_stale_running(
     db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository
 ) -> None:
     """오래된 PENDING, 만료된 RUNNING, 시작 시각 없는 RUNNING을 고른다. 경계는 포함한다."""
-    old_pending = new_document_with(
-        db_session, AnalysisStatus.PENDING, RESUME_NOW - PENDING_AFTER
-    )
+    old_pending = new_document_with(db_session, AnalysisStatus.PENDING, RESUME_NOW - PENDING_AFTER)
     stale_running = new_document_with(
         db_session, AnalysisStatus.RUNNING, LONG_AGO, RESUME_NOW - STALE_AFTER
     )
