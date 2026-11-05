@@ -131,11 +131,16 @@ class SqlAlchemyDocumentAnalysisRepository:
         """추출 항목 교체, 페이지 원문 기록, 분석과 문서 상태 변경을 한 트랜잭션으로 묶는다.
 
         이 실행이 분석을 맡고 있지 않으면(RUNNING이 아니거나 started_at이 다르면) False를 반환한다.
+        그사이 더 새로운 분석이 생겼으면 이 분석의 항목과 SUCCEEDED만 기록하고, 문서가 함께 쓰는
+        페이지 원문과 문서 상태는 새 분석 것을 지키려고 바꾸지 않는다.
         """
         with self._session_factory.begin() as session:
             if not _lock_own_run(session, target, started_at):
                 return False
-            if not _update_document(session, target, document_status, completed_at):
+            if not _lock_document(session, target):
+                return False
+            latest = _is_latest(session, target)
+            if latest and not _update_document(session, target, document_status, completed_at):
                 return False
             _delete_items(session, target)
             page_ids = dict(
@@ -157,20 +162,23 @@ class SqlAlchemyDocumentAnalysisRepository:
             ]
             if rows:
                 session.execute(insert(ExtractedItemModel), rows)
-            # 모든 페이지를 실패로 둔 뒤 성공한 페이지만 덮어쓴다.
-            _mark_pages_failed(session, target)
-            page_rows = [
-                {
-                    "id": page_ids[page_no],
-                    "ocr_status": (
-                        PageOcrStatus.SUCCEEDED if extraction.has_text else PageOcrStatus.SKIPPED
-                    ),
-                    "ocr_text": extraction.raw_text if extraction.has_text else None,
-                }
-                for page_no, extraction in extractions_by_page_no.items()
-            ]
-            if page_rows:
-                session.execute(update(DocumentPageModel), page_rows)
+            if latest:
+                # 모든 페이지를 실패로 둔 뒤 성공한 페이지만 덮어쓴다.
+                _mark_pages_failed(session, target)
+                page_rows = [
+                    {
+                        "id": page_ids[page_no],
+                        "ocr_status": (
+                            PageOcrStatus.SUCCEEDED
+                            if extraction.has_text
+                            else PageOcrStatus.SKIPPED
+                        ),
+                        "ocr_text": extraction.raw_text if extraction.has_text else None,
+                    }
+                    for page_no, extraction in extractions_by_page_no.items()
+                ]
+                if page_rows:
+                    session.execute(update(DocumentPageModel), page_rows)
             _update_analysis(
                 session,
                 target,
@@ -191,11 +199,17 @@ class SqlAlchemyDocumentAnalysisRepository:
 
         설명이 참조해 항목을 지울 수 없으면 항목은 남기고 나머지만 기록한다.
         이 실행이 분석을 맡고 있지 않으면 save_result와 같이 False를 반환한다.
+        그사이 더 새로운 분석이 생겼으면 페이지와 문서 상태는 바꾸지 않고 이 분석의 실패만 기록한다.
         """
         with self._session_factory.begin() as session:
             if not _lock_own_run(session, target, started_at):
                 return False
-            if not _update_document(session, target, DocumentStatus.FAILED, completed_at):
+            if not _lock_document(session, target):
+                return False
+            latest = _is_latest(session, target)
+            if latest and not _update_document(
+                session, target, DocumentStatus.FAILED, completed_at
+            ):
                 return False
             try:
                 with session.begin_nested():
@@ -208,7 +222,8 @@ class SqlAlchemyDocumentAnalysisRepository:
                     target.analysis_id,
                     type(error).__name__,
                 )
-            _mark_pages_failed(session, target)
+            if latest:
+                _mark_pages_failed(session, target)
             _update_analysis(
                 session,
                 target,
@@ -332,6 +347,37 @@ def _lock_own_run(session: Session, target: AnalysisTarget, started_at: datetime
             "다른 실행이 맡은 분석이라 저장하지 않습니다: document_id=%s, analysis_id=%s",
             target.document_id,
             target.analysis_id,
+        )
+        return False
+    return True
+
+
+def _lock_document(session: Session, target: AnalysisTarget) -> bool:
+    # 분석 행 다음에 문서 행을 잠근다(mark_started와 같은 순서). 잠근 동안 최신 분석 판단이
+    # 바뀌지 않게 하려는 것이다. 삭제된 문서면 False다.
+    locked = session.execute(
+        select(DocumentModel.id)
+        .where(DocumentModel.id == target.document_id, *_NOT_DELETED)
+        .with_for_update()
+    ).scalar_one_or_none()
+    return locked is not None
+
+
+def _is_latest(session: Session, target: AnalysisTarget) -> bool:
+    # 최신 분석을 고르는 기준은 find_target과 같다.
+    latest_id = session.execute(
+        select(DocumentAnalysisModel.id)
+        .where(DocumentAnalysisModel.document_id == target.document_id)
+        .order_by(DocumentAnalysisModel.created_at.desc(), DocumentAnalysisModel.id.desc())
+        .limit(1)
+    ).scalar_one()
+    if latest_id != target.analysis_id:
+        logger.info(
+            "더 새로운 분석이 있어 페이지와 문서 상태는 바꾸지 않습니다:"
+            " document_id=%s, analysis_id=%s, latest_analysis_id=%s",
+            target.document_id,
+            target.analysis_id,
+            latest_id,
         )
         return False
     return True
