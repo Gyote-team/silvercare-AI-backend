@@ -10,7 +10,7 @@ from app.application.ports.document_chunk_repository import (
     DocumentChunkRepository,
 )
 from app.application.ports.text_embedder import EmbeddingError, TextEmbedder
-from app.pipelines.documents.steps.chunk_pages import chunk_pages
+from app.pipelines.documents.steps.chunk_pages import chunk_pages, is_personal_info_line
 
 
 class ChunkIndexStatus(StrEnum):
@@ -57,7 +57,8 @@ def index_document_chunks(
     if not target.pages:
         return _skipped(ChunkIndexSkipReason.NO_SOURCE_TEXT, target)
 
-    chunks = chunk_pages(target.pages)
+    # 환자 이름·연락처 같은 줄은 임베딩·검색 대상에 넣지 않는다.
+    chunks = chunk_pages(target.pages, exclude_line=is_personal_info_line)
     if not chunks:
         # 빈 결과로 교체하면 이전 분석의 색인까지 지워 검색할 것이 없어지므로 그대로 둔다.
         return _skipped(ChunkIndexSkipReason.NO_CHUNKS, target)

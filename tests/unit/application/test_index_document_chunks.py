@@ -190,6 +190,34 @@ def test_replace_reason_is_returned(reason: ChunkIndexSkipReason) -> None:
     )
 
 
+def test_personal_info_lines_are_not_embedded() -> None:
+    """개인정보 줄은 임베딩 입력과 저장 조각에서 빠지고 검사 결과 줄은 남는다."""
+    page_text = "성명: 홍길동\n연락처 010-0000-0000\n혈색소 13.2 g/dL"
+    repository = FakeRepository(make_target(page_text))
+    embedder = FakeEmbedder()
+
+    run(repository, embedder)
+
+    assert embedder.calls == [["혈색소 13.2 g/dL"]]
+    chunks, _, _ = repository.replace_calls[0]
+    assert [chunk.content for chunk in chunks] == ["혈색소 13.2 g/dL"]
+
+
+def test_only_personal_info_lines_skip_as_no_chunks() -> None:
+    """개인정보 줄만 있으면 조각이 없어 기존 색인을 지우지 않고 NO_CHUNKS로 건너뛴다."""
+    repository = FakeRepository(make_target("성명: 홍길동\n주소: 서울시 어딘가 1"))
+    embedder = FakeEmbedder()
+
+    outcome = run(repository, embedder)
+
+    assert (outcome.status, outcome.reason) == (
+        ChunkIndexStatus.SKIPPED,
+        ChunkIndexSkipReason.NO_CHUNKS,
+    )
+    assert embedder.calls == []
+    assert repository.replace_calls == []
+
+
 def test_stored_chunks_fill_only_missing_embeddings() -> None:
     """조각이 이미 있으면 다시 나누지 않고 임베딩이 없는 조각만 임베딩해 채운다."""
     missing = (StoredChunk(uuid4(), "둘째 조각"), StoredChunk(uuid4(), "넷째 조각"))

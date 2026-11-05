@@ -12,6 +12,7 @@ from app.pipelines.documents.steps.chunk_pages import (
     MAX_TOKENS,
     chunk_pages,
     count_tokens_cl100k,
+    is_personal_info_line,
 )
 
 PAGE_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -165,9 +166,7 @@ def varied_page_text(rng: random.Random, header_edge: int, row_edge: int) -> str
         lambda: "",
     ]
     weights = [2, 4, 4, 1, 2, 1]
-    return "\n".join(
-        rng.choices(makers, weights)[0]() for _ in range(rng.randint(1, 40))
-    )
+    return "\n".join(rng.choices(makers, weights)[0]() for _ in range(rng.randint(1, 40)))
 
 
 def varied_pages(seed: int, *, header_edge: int, row_edge: int) -> list[PageText]:
@@ -232,6 +231,78 @@ def test_excluded_lines_are_left_out() -> None:
     )
 
     assert [item.content for item in chunks] == ["혈색소 13.2"]
+
+
+# 합성 값만 쓴다. 실제 사람·번호가 아니다.
+@pytest.mark.parametrize(
+    "line",
+    [
+        "성명: 홍길동",
+        "성 명 홍길동",
+        "환자명 홍길동",
+        "이름 : 홍길동",
+        "생년월일 1940-01-01",
+        "주민등록번호 400101-1******",
+        "주민번호: 400101-1000000",
+        "등록번호 12345678",
+        "환자번호: A0001",
+        "연락처 010-0000-0000",
+        "전화번호 02-000-0000",
+        "휴대폰: 01000000000",
+        "주소: 서울시 어딘가 1",
+        "[성명] 홍길동",
+        "• 주소 서울시 어딘가",
+        "성명: 홍길동   성별: 남   나이: 78",
+        "보호자 400101-2000000",
+        "문의 010 0000 0000",
+        "병원 대표번호 031-000-0000",
+    ],
+)
+def test_personal_info_lines_are_detected(line: str) -> None:
+    """개인정보 라벨로 시작하거나 주민등록번호·전화번호 형식이 든 줄을 고른다."""
+    assert is_personal_info_line(line) is True
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "혈색소 13.2 g/dL 12.0-16.0",
+        "검사명 결과 단위 참고치",
+        "처방: 아스피린 100mg 1일 1회 30일",
+        "성별: 남   나이: 78",
+        "성별 여 / 나이 81세",
+        "검사일 2024-01-15",
+        "Na 140 mmol/L 135-145",
+        "전화로 문의하세요",
+        "주소견: 특이 소견 없음",
+        "이름표를 지참하세요",
+        "백혈구 6.5 10^3/uL 4.0-10.0",
+    ],
+)
+def test_clinical_lines_are_kept(line: str) -> None:
+    """검사값·처방 줄과 성별·나이만 있는 줄, 라벨이 다른 낱말의 일부인 줄은 남긴다."""
+    assert is_personal_info_line(line) is False
+
+
+def test_personal_info_filter_keeps_results_in_chunks() -> None:
+    """필터를 넘기면 개인정보 줄은 빠지고 검사 결과와 성별·나이 줄은 조각에 남는다."""
+    text = "\n".join(
+        [
+            "성명: 홍길동",
+            "성별: 남   나이: 78",
+            "연락처 010-0000-0000",
+            HEADER,
+            "혈색소 13.2 g/dL 12.0-16.0",
+        ]
+    )
+
+    chunks = chunk_pages(
+        [make_page(text)], count_tokens=count_characters, exclude_line=is_personal_info_line
+    )
+
+    assert [item.content for item in chunks] == [
+        "\n".join(["성별: 남   나이: 78", HEADER, "혈색소 13.2 g/dL 12.0-16.0"])
+    ]
 
 
 def test_same_input_gives_same_chunks() -> None:

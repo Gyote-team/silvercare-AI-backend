@@ -1,5 +1,6 @@
 """페이지 원문을 검색용 조각으로 나눈다. DB나 외부 API를 쓰지 않는 순수 함수다."""
 
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -39,6 +40,33 @@ _MIN_HEADER_CELLS = 2
 _MIN_ROW_CELLS = 3
 
 
+# 개인정보 라벨로 시작하는 줄. 라벨 글자 사이 OCR 공백을 허용하고, 라벨 바로 뒤에 한글이 오면
+# ("전화로", "주소견") 다른 낱말로 보고 고르지 않는다. 앞의 기호(•, [ 등)는 건너뛴다.
+_PERSONAL_LABEL = re.compile(
+    r"^[^\w]*(?:"
+    r"성\s*명|환\s*자\s*명|이\s*름|생\s*년\s*월\s*일"
+    r"|주\s*민\s*(?:등\s*록\s*)?번\s*호|등\s*록\s*번\s*호|환\s*자\s*번\s*호"
+    r"|연\s*락\s*처|전\s*화(?:\s*번\s*호)?|휴\s*대\s*(?:폰|전\s*화)|주\s*소"
+    r")(?![가-힣])"
+)
+# 주민등록번호(뒷자리 마스킹 포함), 휴대전화, 하이픈 있는 유선 번호. 앞뒤가 숫자면 고르지 않는다.
+_PERSONAL_NUMBER = re.compile(
+    r"(?<!\d)(?:"
+    r"\d{6}\s*-\s*[1-8][\d*]{6}"
+    r"|01[016789][-\s]?\d{3,4}[-\s]?\d{4}"
+    r"|0\d{1,2}-\d{3,4}-\d{4}"
+    r")(?!\d)"
+)
+
+
+def is_personal_info_line(line: str) -> bool:
+    """개인정보 라벨로 시작하거나 주민등록번호·전화번호 형식이 든 줄이면 True다.
+
+    검사값·처방 줄과 성별·나이만 있는 줄은 남긴다. 줄 중간에 나오는 라벨은 보지 않는다.
+    """
+    return bool(_PERSONAL_LABEL.match(line) or _PERSONAL_NUMBER.search(line))
+
+
 @lru_cache
 def _encoding() -> tiktoken.Encoding:
     # text-embedding-3-small과 같은 인코딩이다. 처음 부를 때 인코딩 파일을 읽어 둔다.
@@ -73,7 +101,7 @@ def chunk_pages(
     (OVERLAP_MAX_TOKENS 이하)로 시작한다. 긴 한 줄을 나눈 조각끼리는 겹치지 않는다.
     표 줄에서 잘리면 다음 조각 앞에 표 머리글 줄을 붙이고, 붙이면 상한을 넘는 조각에는
     붙이지 않는다. 페이지는 합치지 않는다.
-    exclude_line은 조각에서 뺄 줄(예: 개인정보 머리글)을 고르는 자리로, 지금은 쓰지 않는다.
+    exclude_line이 True를 돌려준 줄은 조각에서 뺀다(색인에서는 is_personal_info_line을 넘긴다).
     모든 조각은 MAX_TOKENS 이하이고, 어긋나면 잘라 원문을 잃는 대신 ValueError를 던진다.
     """
     chunks: list[DocumentChunk] = []
@@ -158,9 +186,7 @@ def _start(line: _Line, count_tokens: Callable[[str], int]) -> list[_Line]:
     return [line]
 
 
-def _overlap(
-    previous: list[_Line], line: _Line, count_tokens: Callable[[str], int]
-) -> list[_Line]:
+def _overlap(previous: list[_Line], line: _Line, count_tokens: Callable[[str], int]) -> list[_Line]:
     # 긴 줄을 나눈 조각끼리 겹치면 같은 글이 거의 두 번씩 임베딩되므로 겹치지 않는다.
     if line.continued:
         return []
