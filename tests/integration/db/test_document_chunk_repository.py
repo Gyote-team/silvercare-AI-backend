@@ -98,8 +98,8 @@ def stored_rows(db_session: Session, document_id: UUID) -> list[Row]:
 
 def store(
     repository: SqlAlchemyDocumentChunkRepository, target: ChunkIndexTarget, *contents: str
-) -> bool:
-    """합성 조각과 벡터로 replace_chunks를 부른다."""
+) -> ChunkIndexSkipReason | None:
+    """합성 조각과 벡터로 replace_chunks를 부른다. 저장하면 None이다."""
     return repository.replace_chunks(
         target, make_chunks(target, *contents), vectors(len(contents)), MODEL_NAME
     )
@@ -116,7 +116,7 @@ def require_target(
 ) -> ChunkIndexTarget:
     """색인 대상을 읽고, 없으면 테스트를 실패시킨다."""
     target = repository.find_index_target(document_id)
-    assert target is not None
+    assert isinstance(target, ChunkIndexTarget)
     return target
 
 
@@ -143,11 +143,46 @@ def test_index_target_has_ids_and_text_pages_in_order(
 def test_no_target_when_latest_analysis_is_not_succeeded(
     db_session: Session, repository: SqlAlchemyDocumentChunkRepository
 ) -> None:
-    """최신 분석이 SUCCEEDED가 아니면 대상이 없다."""
+    """최신 분석이 SUCCEEDED가 아니면 NOT_ANALYZED다."""
     document_id = make_ready_document(db_session, {1: "원문"})
     add_newer_analysis(db_session, document_id, "RUNNING")
 
-    assert repository.find_index_target(document_id) is None
+    assert repository.find_index_target(document_id) == ChunkIndexSkipReason.NOT_ANALYZED
+
+
+def test_no_target_when_document_is_not_ready(
+    db_session: Session, repository: SqlAlchemyDocumentChunkRepository
+) -> None:
+    """분석 중인 문서는 NOT_ANALYZED다."""
+    document_id = make_ready_document(db_session, {1: "원문"})
+    db_session.execute(
+        text("UPDATE documents SET status = 'PROCESSING' WHERE id = :id"), {"id": document_id}
+    )
+
+    assert repository.find_index_target(document_id) == ChunkIndexSkipReason.NOT_ANALYZED
+
+
+def test_no_target_when_document_is_missing(repository: SqlAlchemyDocumentChunkRepository) -> None:
+    """없는 문서는 삭제된 문서와 같이 DELETED다."""
+    assert repository.find_index_target(uuid4()) == ChunkIndexSkipReason.DELETED
+
+
+def test_index_target_counts_failed_pages(
+    db_session: Session, repository: SqlAlchemyDocumentChunkRepository
+) -> None:
+    """FAILED 페이지 수를 함께 읽는다. SKIPPED 페이지는 세지 않는다."""
+    document_id = make_ready_document(db_session, {1: "원문", 2: None, 3: "실패할 쪽"})
+    db_session.execute(
+        text(
+            "UPDATE document_pages SET ocr_status = 'FAILED', ocr_text = NULL"
+            " WHERE document_id = :id AND page_no = 3"
+        ),
+        {"id": document_id},
+    )
+
+    target = require_target(repository, document_id)
+
+    assert (len(target.pages), target.failed_page_count) == (1, 1)
 
 
 # 문서 삭제 방식 두 가지. Spring은 status를 DELETED로 바꾸거나 deleted_at을 채운다.
@@ -166,11 +201,11 @@ def delete_document(db_session: Session, document_id: UUID, kind: str) -> None:
 def test_no_target_when_document_is_deleted(
     db_session: Session, repository: SqlAlchemyDocumentChunkRepository, kind: str
 ) -> None:
-    """deleted_at이 있거나 status가 DELETED인 문서는 대상이 아니다."""
+    """deleted_at이 있거나 status가 DELETED인 문서는 DELETED다."""
     document_id = make_ready_document(db_session, {1: "원문"})
     delete_document(db_session, document_id, kind)
 
-    assert repository.find_index_target(document_id) is None
+    assert repository.find_index_target(document_id) == ChunkIndexSkipReason.DELETED
 
 
 def test_replace_stores_chunks_with_embeddings(
@@ -180,7 +215,7 @@ def test_replace_stores_chunks_with_embeddings(
     document_id = make_ready_document(db_session, {1: "원문"})
     target = require_target(repository, document_id)
 
-    assert store(repository, target, "첫 조각", "둘째 조각") is True
+    assert store(repository, target, "첫 조각", "둘째 조각") is None
 
     rows = stored_rows(db_session, document_id)
     assert [(row.chunk_index, row.content) for row in rows] == [(0, "첫 조각"), (1, "둘째 조각")]
@@ -199,7 +234,7 @@ def test_rerun_of_same_analysis_replaces_previous_chunks(
     target = require_target(repository, document_id)
     store(repository, target, "이전 1", "이전 2", "이전 3")
 
-    assert store(repository, target, "새 조각") is True
+    assert store(repository, target, "새 조각") is None
 
     assert [row.content for row in stored_rows(db_session, document_id)] == ["새 조각"]
     assert count_chunk_embeddings(db_session, document_id) == 1
@@ -213,7 +248,7 @@ def test_new_analysis_removes_chunks_of_previous_analysis(
     store(repository, require_target(repository, document_id), "이전 조각")
     new_analysis_id = add_newer_analysis(db_session, document_id, "SUCCEEDED")
 
-    assert store(repository, require_target(repository, document_id), "새 조각") is True
+    assert store(repository, require_target(repository, document_id), "새 조각") is None
 
     rows = stored_rows(db_session, document_id)
     assert [(row.analysis_id, row.content) for row in rows] == [(new_analysis_id, "새 조각")]
@@ -256,12 +291,12 @@ def test_cited_chunk_blocks_replace_and_keeps_previous(
 def test_superseded_analysis_changes_nothing(
     db_session: Session, repository: SqlAlchemyDocumentChunkRepository
 ) -> None:
-    """그사이 새 분석이 생겼으면 이전 대상으로 저장하지 않고 False를 반환한다."""
+    """그사이 새 분석이 생겼으면 이전 대상으로 저장하지 않고 STALE_ANALYSIS를 반환한다."""
     document_id = make_ready_document(db_session, {1: "원문"})
     old_target = require_target(repository, document_id)
     add_newer_analysis(db_session, document_id, "SUCCEEDED")
 
-    assert store(repository, old_target, "늦은 조각") is False
+    assert store(repository, old_target, "늦은 조각") == ChunkIndexSkipReason.STALE_ANALYSIS
     assert stored_rows(db_session, document_id) == []
 
 
@@ -269,12 +304,12 @@ def test_superseded_analysis_changes_nothing(
 def test_deleted_document_changes_nothing(
     db_session: Session, repository: SqlAlchemyDocumentChunkRepository, kind: str
 ) -> None:
-    """그사이 deleted_at이 채워졌거나 DELETED가 된 문서에는 저장하지 않고 False를 반환한다."""
+    """그사이 deleted_at이 채워졌거나 DELETED가 된 문서에는 저장하지 않고 DELETED를 반환한다."""
     document_id = make_ready_document(db_session, {1: "원문"})
     target = require_target(repository, document_id)
     delete_document(db_session, document_id, kind)
 
-    assert store(repository, target, "조각") is False
+    assert store(repository, target, "조각") == ChunkIndexSkipReason.DELETED
     assert stored_rows(db_session, document_id) == []
 
 

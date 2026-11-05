@@ -1,14 +1,13 @@
 """문서 조각을 document_chunks에, 그 임베딩을 embeddings(DOCUMENT_CHUNK)에 쓴다."""
 
-import logging
 from collections.abc import Sequence
 from uuid import UUID, uuid4
 
-from sqlalchemy import Row, Select, column, delete, exists, insert, select, table, text
+from sqlalchemy import Row, Select, column, delete, exists, func, insert, select, table, text
 from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.application.ports.document_chunk_repository import ChunkIndexTarget
+from app.application.ports.document_chunk_repository import ChunkIndexSkipReason, ChunkIndexTarget
 from app.domain.document.document_analysis import AnalysisStatus, DocumentStatus
 from app.domain.document.document_chunk import DocumentChunk, PageText
 from app.domain.document.document_page import PageOcrStatus
@@ -16,8 +15,6 @@ from app.infrastructure.db.models.document import DocumentModel
 from app.infrastructure.db.models.document_analysis import DocumentAnalysisModel
 from app.infrastructure.db.models.document_chunk import DocumentChunkModel
 from app.infrastructure.db.models.document_page import DocumentPageModel
-
-logger = logging.getLogger(__name__)
 
 SOURCE_TYPE = "DOCUMENT_CHUNK"
 
@@ -43,19 +40,28 @@ class SqlAlchemyDocumentChunkRepository:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
 
-    def find_index_target(self, document_id: UUID) -> ChunkIndexTarget | None:
+    def find_index_target(self, document_id: UUID) -> ChunkIndexTarget | ChunkIndexSkipReason:
         """READY·NEEDS_REVIEW 문서의 최신 성공 분석과 원문이 있는 페이지를 읽는다."""
         with self._session_factory() as session:
             document = session.execute(
-                select(DocumentModel.patient_id, DocumentModel.visit_id).where(
-                    DocumentModel.id == document_id, *_INDEXABLE
-                )
+                select(
+                    DocumentModel.patient_id,
+                    DocumentModel.visit_id,
+                    DocumentModel.status,
+                    DocumentModel.deleted_at,
+                ).where(DocumentModel.id == document_id)
             ).one_or_none()
-            if document is None:
-                return None
+            if (
+                document is None
+                or document.deleted_at is not None
+                or document.status == DocumentStatus.DELETED
+            ):
+                return ChunkIndexSkipReason.DELETED
+            if document.status not in (DocumentStatus.READY, DocumentStatus.NEEDS_REVIEW):
+                return ChunkIndexSkipReason.NOT_ANALYZED
             analysis = _latest_analysis(session, document_id)
             if analysis is None or analysis.status != AnalysisStatus.SUCCEEDED:
-                return None
+                return ChunkIndexSkipReason.NOT_ANALYZED
             pages = session.execute(
                 select(DocumentPageModel.id, DocumentPageModel.page_no, DocumentPageModel.ocr_text)
                 .where(
@@ -65,12 +71,19 @@ class SqlAlchemyDocumentChunkRepository:
                 )
                 .order_by(DocumentPageModel.page_no)
             ).all()
+            failed_page_count = session.execute(
+                select(func.count()).where(
+                    DocumentPageModel.document_id == document_id,
+                    DocumentPageModel.ocr_status == PageOcrStatus.FAILED,
+                )
+            ).scalar_one()
         return ChunkIndexTarget(
             document_id=document_id,
             analysis_id=analysis.id,
             patient_id=document.patient_id,
             visit_id=document.visit_id,
             pages=tuple(PageText(page.id, page.page_no, page.ocr_text) for page in pages),
+            failed_page_count=failed_page_count,
         )
 
     def replace_chunks(
@@ -79,7 +92,7 @@ class SqlAlchemyDocumentChunkRepository:
         chunks: Sequence[DocumentChunk],
         vectors: Sequence[Sequence[float]],
         model_name: str,
-    ) -> bool:
+    ) -> ChunkIndexSkipReason | None:
         """이 문서의 이전 조각·임베딩을 지우고 새 것을 한 트랜잭션에서 넣는다.
 
         같은 분석을 다시 실행해도 (analysis_id, chunk_index) 유일 키에 걸리지 않게 먼저 지운다.
@@ -94,22 +107,18 @@ class SqlAlchemyDocumentChunkRepository:
                 .where(DocumentModel.id == target.document_id, *_INDEXABLE)
                 .with_for_update()
             ).scalar_one_or_none()
-            latest = _latest_analysis(session, target.document_id) if locked else None
+            if locked is None:
+                return ChunkIndexSkipReason.DELETED
+            latest = _latest_analysis(session, target.document_id)
             if (
                 latest is None
                 or latest.id != target.analysis_id
                 or latest.status != AnalysisStatus.SUCCEEDED
             ):
-                logger.info(
-                    "최신 분석이 아니거나 삭제된 문서라 조각을 바꾸지 않습니다:"
-                    " document_id=%s, analysis_id=%s",
-                    target.document_id,
-                    target.analysis_id,
-                )
-                return False
+                return ChunkIndexSkipReason.STALE_ANALYSIS
             _delete_document_chunks(session, target.document_id)
             _insert_chunks(session, target, chunks, vectors, model_name)
-        return True
+        return None
 
     def find_unindexed_document_ids(self, *, limit: int) -> list[UUID]:
         """분석은 성공했지만 최신 분석의 조각 임베딩이 없는 문서 id를 오래된 분석부터 읽는다.

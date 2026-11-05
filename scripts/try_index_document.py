@@ -60,7 +60,10 @@ def main() -> None:
     finally:
         embedder.close()
 
-    print(f"status: {outcome.status}, chunks: {outcome.chunk_count}")
+    print(
+        f"status: {outcome.status}, reason: {outcome.reason}, chunks: {outcome.chunk_count},"
+        f" pages: {outcome.succeeded_pages} succeeded / {outcome.failed_pages} failed"
+    )
     if outcome.error_code is not None:
         print(f"error_code: {outcome.error_code}")
     with session_factory() as session:

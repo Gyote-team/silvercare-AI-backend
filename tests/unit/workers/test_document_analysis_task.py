@@ -8,9 +8,20 @@ import pytest
 from pydantic import SecretStr
 
 from app.application.ports.document_analysis_repository import AnalysisTarget
+from app.application.ports.document_chunk_repository import (
+    ChunkIndexSkipReason,
+    ChunkIndexTarget,
+)
+from app.application.ports.text_embedder import EmbeddingError, EmbeddingErrorCode
 from app.application.use_cases.analyze_document import DocumentAnalysisResult
+from app.application.use_cases.index_document_chunks import (
+    ChunkIndexOutcome,
+    ChunkIndexStatus,
+    index_document_chunks,
+)
 from app.core.config import Settings
 from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
+from app.domain.document.document_chunk import PageText
 from app.workers import document_analysis_task
 
 _REQUEST_ID = "req-test-1"
@@ -30,16 +41,18 @@ class FakeRepository:
         self.unindexed_ids: list[UUID] = []
         self.indexed_ids: list[UUID] = []
         self.index_error: Exception | None = None
+        self.index_outcome = ChunkIndexOutcome(status=ChunkIndexStatus.INDEXED)
 
     def find_unindexed_document_ids(self, *, limit: int) -> list[UUID]:
         """조각 저장소 대신 정해 둔 미색인 문서 id를 돌려준다."""
         return self.unindexed_ids
 
-    def index(self, document_id: UUID, **kwargs: object) -> None:
-        """index_document_chunks 대신 호출을 기록한다. 정해 둔 예외가 있으면 던진다."""
+    def index(self, document_id: UUID, **kwargs: object) -> ChunkIndexOutcome:
+        """index_document_chunks 대신 호출을 기록하고 정해 둔 결과를 돌려준다."""
         if self.index_error is not None:
             raise self.index_error
         self.indexed_ids.append(document_id)
+        return self.index_outcome
 
     def find_target(self, document_id: UUID) -> AnalysisTarget | None:
         """정해 둔 대상을 돌려준다."""
@@ -323,6 +336,88 @@ def test_indexing_failure_is_logged_without_recording(
     assert str(document_id) in caplog.text
     assert "RuntimeError" in caplog.text
     assert _OBJECT_KEY not in caplog.text
+
+
+def test_index_outcome_is_logged_with_reason_and_counts(
+    repository: FakeRepository, caplog: pytest.LogCaptureFixture
+) -> None:
+    """색인 결과는 상태, 이유, 조각 수, 성공·실패 페이지 수와 함께 INFO로 남는다."""
+    repository.index_outcome = ChunkIndexOutcome(
+        status=ChunkIndexStatus.SKIPPED,
+        reason=ChunkIndexSkipReason.NO_CHUNKS,
+        succeeded_pages=2,
+        failed_pages=1,
+    )
+    document_id = uuid4()
+
+    with caplog.at_level(logging.INFO, logger=document_analysis_task.__name__):
+        document_analysis_task.run_chunk_indexing(document_id, _REQUEST_ID)
+
+    [record] = [r for r in caplog.records if "조각 색인 결과" in r.getMessage()]
+    assert record.levelno == logging.INFO
+    message = record.getMessage()
+    assert str(document_id) in message
+    assert "status=SKIPPED" in message
+    assert "reason=NO_CHUNKS" in message
+    assert "chunks=0, succeeded_pages=2, failed_pages=1" in message
+
+
+class _SourceTextRepository:
+    """원문이 담긴 색인 대상을 돌려주는 가짜 조각 저장소. 저장은 하지 않는다."""
+
+    source_text = "합성 검사 결과지\n혈색소 13.2 g/dL"
+
+    def find_index_target(self, document_id: UUID) -> ChunkIndexTarget:
+        """원문 한 쪽과 실패 한 쪽이 있는 대상을 돌려준다."""
+        return ChunkIndexTarget(
+            document_id=document_id,
+            analysis_id=uuid4(),
+            patient_id=uuid4(),
+            visit_id=uuid4(),
+            pages=(PageText(page_id=uuid4(), page_no=1, text=self.source_text),),
+            failed_page_count=1,
+        )
+
+
+class _RateLimitedEmbedder:
+    """호출 한도 초과로 실패하는 가짜 임베더. 외부 API를 부르지 않는다."""
+
+    model_name = "fake-embedding"
+
+    def embed(self, texts: object) -> list[list[float]]:
+        """항상 RATE_LIMITED로 실패한다."""
+        raise EmbeddingError(EmbeddingErrorCode.RATE_LIMITED)
+
+    def close(self) -> None:
+        """닫을 것이 없다."""
+
+
+def test_failed_index_logs_error_code_without_source_text(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: FakeRepository,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """임베딩이 실패하면 오류 코드는 ERROR로 남고 문서 원문은 로그에 남지 않는다."""
+    chunk_repository = _SourceTextRepository()
+    monkeypatch.setattr(document_analysis_task, "index_document_chunks", index_document_chunks)
+    monkeypatch.setattr(
+        document_analysis_task, "SqlAlchemyDocumentChunkRepository", lambda *a: chunk_repository
+    )
+    monkeypatch.setattr(
+        document_analysis_task, "create_text_embedder", lambda _: _RateLimitedEmbedder()
+    )
+    document_id = uuid4()
+
+    with caplog.at_level(logging.DEBUG):
+        document_analysis_task.run_chunk_indexing(document_id, _REQUEST_ID)
+
+    [record] = [r for r in caplog.records if "조각 색인 결과" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert "status=FAILED" in record.getMessage()
+    assert "error_code=RATE_LIMITED" in record.getMessage()
+    assert "succeeded_pages=1, failed_pages=1" in record.getMessage()
+    assert "혈색소" not in caplog.text
+    assert "합성 검사 결과지" not in caplog.text
 
 
 def test_resume_submits_unindexed_documents_after_analyses(repository: FakeRepository) -> None:

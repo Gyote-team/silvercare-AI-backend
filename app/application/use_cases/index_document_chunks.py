@@ -1,36 +1,40 @@
 """분석이 끝난 문서의 원문을 조각으로 나누고 임베딩해 검색용으로 저장한다."""
 
-import logging
 from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
 from app.application.ports.document_chunk_repository import (
     ChunkIndexSkipReason,
+    ChunkIndexTarget,
     DocumentChunkRepository,
 )
 from app.application.ports.text_embedder import EmbeddingError, TextEmbedder
 from app.pipelines.documents.steps.chunk_pages import chunk_pages
-
-logger = logging.getLogger(__name__)
 
 
 class ChunkIndexStatus(StrEnum):
     """색인 한 번의 결과."""
 
     INDEXED = "INDEXED"
-    SKIPPED = "SKIPPED"  # 대상이 아니거나, 그사이 새 분석이 생겼거나 문서가 삭제됨
+    SKIPPED = "SKIPPED"  # 이유는 ChunkIndexOutcome.reason에 담는다
     FAILED = "FAILED"  # 임베딩 실패. 이전 조각과 임베딩은 그대로 남는다
 
 
 @dataclass(frozen=True)
 class ChunkIndexOutcome:
-    """색인 결과. error_code는 FAILED일 때 EmbeddingErrorCode 값, reason은 SKIPPED일 때 이유다."""
+    """색인 결과. 로그는 호출한 쪽이 이 값으로 남긴다.
+
+    reason은 SKIPPED일 때 이유, error_code는 FAILED일 때 EmbeddingErrorCode 값이다.
+    succeeded_pages는 원문이 있는 SUCCEEDED 페이지 수, failed_pages는 FAILED 페이지 수다.
+    """
 
     status: ChunkIndexStatus
     chunk_count: int = 0
     error_code: str | None = None
     reason: ChunkIndexSkipReason | None = None
+    succeeded_pages: int = 0
+    failed_pages: int = 0
 
 
 def index_document_chunks(
@@ -42,38 +46,38 @@ def index_document_chunks(
     임베딩은 DB 트랜잭션 밖에서 먼저 끝내고, 교체는 저장소가 한 트랜잭션으로 한다.
     """
     target = repository.find_index_target(document_id)
-    if target is None:
-        logger.info("색인 대상이 아니어서 건너뜁니다: document_id=%s", document_id)
-        return ChunkIndexOutcome(status=ChunkIndexStatus.SKIPPED)
+    if isinstance(target, ChunkIndexSkipReason):
+        return _skipped(target)
+    if not target.pages:
+        return _skipped(ChunkIndexSkipReason.NO_SOURCE_TEXT, target)
 
     chunks = chunk_pages(target.pages)
     if not chunks:
         # 빈 결과로 교체하면 이전 분석의 색인까지 지워 검색할 것이 없어지므로 그대로 둔다.
-        logger.info(
-            "조각이 없어 기존 색인을 그대로 둡니다: document_id=%s, analysis_id=%s",
-            document_id,
-            target.analysis_id,
-        )
-        return ChunkIndexOutcome(
-            status=ChunkIndexStatus.SKIPPED, reason=ChunkIndexSkipReason.NO_CHUNKS
-        )
+        return _skipped(ChunkIndexSkipReason.NO_CHUNKS, target)
     try:
         vectors = embedder.embed([chunk.content for chunk in chunks])
     except EmbeddingError as error:
-        logger.error(
-            "조각 임베딩 실패: document_id=%s, analysis_id=%s, error_code=%s",
-            document_id,
-            target.analysis_id,
-            error.code,
+        return ChunkIndexOutcome(
+            status=ChunkIndexStatus.FAILED,
+            error_code=error.code.value,
+            **_page_counts(target),
         )
-        return ChunkIndexOutcome(status=ChunkIndexStatus.FAILED, error_code=error.code.value)
 
-    if not repository.replace_chunks(target, chunks, vectors, embedder.model_name):
-        return ChunkIndexOutcome(status=ChunkIndexStatus.SKIPPED)
-    logger.info(
-        "조각 색인 완료: document_id=%s, analysis_id=%s, chunks=%d",
-        document_id,
-        target.analysis_id,
-        len(chunks),
+    reason = repository.replace_chunks(target, chunks, vectors, embedder.model_name)
+    if reason is not None:
+        return _skipped(reason, target)
+    return ChunkIndexOutcome(
+        status=ChunkIndexStatus.INDEXED, chunk_count=len(chunks), **_page_counts(target)
     )
-    return ChunkIndexOutcome(status=ChunkIndexStatus.INDEXED, chunk_count=len(chunks))
+
+
+def _skipped(
+    reason: ChunkIndexSkipReason, target: ChunkIndexTarget | None = None
+) -> ChunkIndexOutcome:
+    counts = _page_counts(target) if target is not None else {}
+    return ChunkIndexOutcome(status=ChunkIndexStatus.SKIPPED, reason=reason, **counts)
+
+
+def _page_counts(target: ChunkIndexTarget) -> dict[str, int]:
+    return {"succeeded_pages": len(target.pages), "failed_pages": target.failed_page_count}

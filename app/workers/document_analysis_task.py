@@ -9,7 +9,11 @@ from uuid import UUID
 
 from app.application.services.retrying_page_extractor import RetryingPageExtractor
 from app.application.use_cases.analyze_document import analyze_document
-from app.application.use_cases.index_document_chunks import index_document_chunks
+from app.application.use_cases.index_document_chunks import (
+    ChunkIndexOutcome,
+    ChunkIndexStatus,
+    index_document_chunks,
+)
 from app.core.config import Settings, get_settings
 from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
 from app.domain.operation.error_code import AnalysisErrorCode, FailedStep
@@ -117,7 +121,7 @@ def run_chunk_indexing(document_id: UUID, request_id: str | None = None) -> None
     embedder: OpenAITextEmbedder | None = None
     try:
         embedder = create_text_embedder(get_settings())
-        index_document_chunks(
+        outcome = index_document_chunks(
             document_id,
             repository=SqlAlchemyDocumentChunkRepository(get_session_factory()),
             embedder=embedder,
@@ -130,9 +134,31 @@ def run_chunk_indexing(document_id: UUID, request_id: str | None = None) -> None
             request_id,
             type(error).__name__,
         )
+    else:
+        _log_index_outcome(outcome, document_id, request_id)
     finally:
         if embedder is not None:
             _close_embedder(embedder, document_id)
+
+
+def _log_index_outcome(
+    outcome: ChunkIndexOutcome, document_id: UUID, request_id: str | None
+) -> None:
+    # 결과는 로그로만 남긴다. 문서 상태에 색인 결과를 기록하는 칼럼은 아직 없다.
+    level = logging.ERROR if outcome.status == ChunkIndexStatus.FAILED else logging.INFO
+    logger.log(
+        level,
+        "조각 색인 결과: document_id=%s, request_id=%s, status=%s, reason=%s, chunks=%d,"
+        " succeeded_pages=%d, failed_pages=%d, error_code=%s",
+        document_id,
+        request_id,
+        outcome.status,
+        outcome.reason,
+        outcome.chunk_count,
+        outcome.succeeded_pages,
+        outcome.failed_pages,
+        outcome.error_code,
+    )
 
 
 def resume_unfinished_analyses(executor: Executor) -> None:

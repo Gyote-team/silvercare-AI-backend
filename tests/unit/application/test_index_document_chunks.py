@@ -1,6 +1,5 @@
 """조각 색인 유스케이스 테스트. 저장소와 임베더는 가짜로 바꾼다."""
 
-import logging
 from collections.abc import Sequence
 from uuid import UUID, uuid4
 
@@ -15,7 +14,6 @@ from app.application.ports.text_embedder import (
     EmbeddingError,
     EmbeddingErrorCode,
 )
-from app.application.use_cases import index_document_chunks as use_case_module
 from app.application.use_cases.index_document_chunks import (
     ChunkIndexOutcome,
     ChunkIndexStatus,
@@ -29,13 +27,18 @@ SOURCE_TEXT = "합성 검사 결과지\n혈색소 13.2 g/dL"
 class FakeRepository:
     """대상 조회와 교체 호출만 흉내 내는 가짜 조각 저장소."""
 
-    def __init__(self, target: ChunkIndexTarget | None, *, replaced: bool = True) -> None:
+    def __init__(
+        self,
+        target: ChunkIndexTarget | ChunkIndexSkipReason,
+        *,
+        replace_result: ChunkIndexSkipReason | None = None,
+    ) -> None:
         self.target = target
-        self.replaced = replaced
+        self.replace_result = replace_result
         self.replace_calls: list[tuple[list[DocumentChunk], list[list[float]], str]] = []
 
-    def find_index_target(self, document_id: UUID) -> ChunkIndexTarget | None:
-        """정해 둔 대상을 돌려준다."""
+    def find_index_target(self, document_id: UUID) -> ChunkIndexTarget | ChunkIndexSkipReason:
+        """정해 둔 대상이나 건너뛸 이유를 돌려준다."""
         return self.target
 
     def replace_chunks(
@@ -44,10 +47,10 @@ class FakeRepository:
         chunks: Sequence[DocumentChunk],
         vectors: Sequence[Sequence[float]],
         model_name: str,
-    ) -> bool:
+    ) -> ChunkIndexSkipReason | None:
         """받은 값을 기록하고 정해 둔 결과를 돌려준다."""
         self.replace_calls.append((list(chunks), [list(v) for v in vectors], model_name))
-        return self.replaced
+        return self.replace_result
 
     def find_unindexed_document_ids(self, *, limit: int) -> list[UUID]:
         """쓰지 않는다."""
@@ -71,7 +74,7 @@ class FakeEmbedder:
         return [[0.5] * EMBEDDING_DIMENSIONS for _ in texts]
 
 
-def make_target(*texts: str) -> ChunkIndexTarget:
+def make_target(*texts: str, failed_page_count: int = 0) -> ChunkIndexTarget:
     """페이지 원문이 주어진 합성 색인 대상을 만든다."""
     return ChunkIndexTarget(
         document_id=uuid4(),
@@ -82,6 +85,7 @@ def make_target(*texts: str) -> ChunkIndexTarget:
             PageText(page_id=uuid4(), page_no=index + 1, text=text)
             for index, text in enumerate(texts)
         ),
+        failed_page_count=failed_page_count,
     )
 
 
@@ -91,13 +95,15 @@ def run(repository: FakeRepository, embedder: FakeEmbedder) -> ChunkIndexOutcome
 
 
 def test_chunks_are_embedded_and_replaced() -> None:
-    """조각을 임베딩하고 모델 이름과 함께 교체를 한 번 부른다."""
-    repository = FakeRepository(make_target(SOURCE_TEXT, "둘째 쪽"))
+    """조각을 임베딩하고 모델 이름과 함께 교체를 한 번 부르며, 페이지 수를 함께 돌려준다."""
+    repository = FakeRepository(make_target(SOURCE_TEXT, "둘째 쪽", failed_page_count=1))
     embedder = FakeEmbedder()
 
     outcome = run(repository, embedder)
 
-    assert outcome == ChunkIndexOutcome(status=ChunkIndexStatus.INDEXED, chunk_count=2)
+    assert outcome == ChunkIndexOutcome(
+        status=ChunkIndexStatus.INDEXED, chunk_count=2, succeeded_pages=2, failed_pages=1
+    )
     assert embedder.calls == [[SOURCE_TEXT, "둘째 쪽"]]
     chunks, vectors, model_name = repository.replace_calls[0]
     assert [chunk.chunk_index for chunk in chunks] == [0, 1]
@@ -105,36 +111,33 @@ def test_chunks_are_embedded_and_replaced() -> None:
     assert model_name == "fake-embedding"
 
 
-def test_missing_target_skips_without_embedding() -> None:
-    """대상이 없으면 임베딩도 교체도 하지 않고 SKIPPED다."""
-    repository = FakeRepository(None)
+@pytest.mark.parametrize(
+    "reason", [ChunkIndexSkipReason.DELETED, ChunkIndexSkipReason.NOT_ANALYZED]
+)
+def test_lookup_reason_skips_without_embedding(reason: ChunkIndexSkipReason) -> None:
+    """대상 조회가 이유를 돌려주면 임베딩도 교체도 하지 않고 그 이유로 건너뛴다."""
+    repository = FakeRepository(reason)
     embedder = FakeEmbedder()
 
-    assert run(repository, embedder).status == ChunkIndexStatus.SKIPPED
+    assert run(repository, embedder) == ChunkIndexOutcome(
+        status=ChunkIndexStatus.SKIPPED, reason=reason
+    )
     assert embedder.calls == []
     assert repository.replace_calls == []
 
 
-def test_embedding_failure_keeps_previous_chunks(caplog: pytest.LogCaptureFixture) -> None:
-    """임베딩이 실패하면 교체를 부르지 않고 코드만 로그에 남긴 채 FAILED를 돌려준다."""
-    repository = FakeRepository(make_target(SOURCE_TEXT))
+def test_no_text_pages_skip_as_no_source_text() -> None:
+    """원문이 있는 페이지가 없으면 NO_SOURCE_TEXT로 건너뛰고 실패 페이지 수를 돌려준다."""
+    repository = FakeRepository(make_target(failed_page_count=2))
+    embedder = FakeEmbedder()
 
-    with caplog.at_level(logging.ERROR, logger=use_case_module.__name__):
-        outcome = run(repository, FakeEmbedder(EmbeddingErrorCode.RATE_LIMITED))
-
-    assert outcome == ChunkIndexOutcome(
-        status=ChunkIndexStatus.FAILED, error_code=EmbeddingErrorCode.RATE_LIMITED.value
+    assert run(repository, embedder) == ChunkIndexOutcome(
+        status=ChunkIndexStatus.SKIPPED,
+        reason=ChunkIndexSkipReason.NO_SOURCE_TEXT,
+        failed_pages=2,
     )
+    assert embedder.calls == []
     assert repository.replace_calls == []
-    assert "RATE_LIMITED" in caplog.text
-    assert "혈색소" not in caplog.text
-
-
-def test_superseded_replace_is_skipped() -> None:
-    """교체 시점에 최신 분석이 아니면 SKIPPED다."""
-    repository = FakeRepository(make_target(SOURCE_TEXT), replaced=False)
-
-    assert run(repository, FakeEmbedder()).status == ChunkIndexStatus.SKIPPED
 
 
 def test_text_without_chunks_keeps_previous_index() -> None:
@@ -145,7 +148,37 @@ def test_text_without_chunks_keeps_previous_index() -> None:
     outcome = run(repository, embedder)
 
     assert outcome == ChunkIndexOutcome(
-        status=ChunkIndexStatus.SKIPPED, reason=ChunkIndexSkipReason.NO_CHUNKS
+        status=ChunkIndexStatus.SKIPPED, reason=ChunkIndexSkipReason.NO_CHUNKS, succeeded_pages=1
     )
     assert embedder.calls == []
+    assert repository.replace_calls == []
+
+
+@pytest.mark.parametrize(
+    "reason", [ChunkIndexSkipReason.STALE_ANALYSIS, ChunkIndexSkipReason.DELETED]
+)
+def test_replace_reason_is_returned(reason: ChunkIndexSkipReason) -> None:
+    """교체 시점에 최신 분석이 아니거나 삭제됐으면 저장소가 준 이유로 건너뛴다."""
+    repository = FakeRepository(make_target(SOURCE_TEXT), replace_result=reason)
+
+    outcome = run(repository, FakeEmbedder())
+
+    assert (outcome.status, outcome.reason, outcome.chunk_count) == (
+        ChunkIndexStatus.SKIPPED,
+        reason,
+        0,
+    )
+
+
+def test_embedding_failure_keeps_previous_chunks() -> None:
+    """임베딩이 실패하면 교체를 부르지 않고 오류 코드와 함께 FAILED를 돌려준다."""
+    repository = FakeRepository(make_target(SOURCE_TEXT))
+
+    outcome = run(repository, FakeEmbedder(EmbeddingErrorCode.RATE_LIMITED))
+
+    assert outcome == ChunkIndexOutcome(
+        status=ChunkIndexStatus.FAILED,
+        error_code=EmbeddingErrorCode.RATE_LIMITED.value,
+        succeeded_pages=1,
+    )
     assert repository.replace_calls == []
