@@ -52,14 +52,29 @@ _CELL_SEPARATOR = re.compile(r"[\s|]+")
 _SENTENCE_END = re.compile(r"(?:[다요]\s*[.!?]?|[.!?])$")
 
 
-# 개인정보 라벨로 시작하는 줄. 라벨 글자 사이 OCR 공백을 허용하고, 라벨 바로 뒤에 한글이 오면
+# 라벨 정규식 공통 규칙: 라벨 글자 사이 OCR 공백을 허용하고, 라벨 바로 뒤에 한글이 오면
 # ("전화로", "주소견") 다른 낱말로 보고 고르지 않는다. 앞의 기호(•, [ 등)는 건너뛴다.
+# 이 라벨로 시작하는 줄은 내용과 상관없이 거른다.
 _PERSONAL_LABEL = re.compile(
     r"^[^\w]*(?:"
     r"성\s*명|환\s*자\s*명|이\s*름|생\s*년\s*월\s*일"
     r"|주\s*민\s*(?:등\s*록\s*)?번\s*호|등\s*록\s*번\s*호|환\s*자\s*번\s*호"
-    r"|연\s*락\s*처|전\s*화(?:\s*번\s*호)?|휴\s*대\s*(?:폰|전\s*화)|주\s*소"
+    r"|주\s*소\s*지|거\s*주\s*지"
     r")(?![가-힣])"
+)
+# 연락처 라벨. "전화 상담 예정" 같은 안내 문장을 남기려고 줄에 숫자가 있을 때만 거른다.
+_CONTACT_LABEL = re.compile(
+    r"^[^\w]*(?:연\s*락\s*처|전\s*화(?:\s*번\s*호)?|휴\s*대\s*(?:폰|전\s*화))(?![가-힣])"
+)
+# "주소"는 진료기록에서 주호소(chief complaint)로도 쓰여, 줄에 주소 형태가 있을 때만 거른다.
+_ADDRESS_LABEL = re.compile(r"^[^\w]*주\s*소(?![가-힣])")
+# 주소 형태: 광역 시·도 이름으로 시작해 시·군·구가 이어지거나, 도로명 뒤에 건물 번호가 온다.
+# 도로명은 조사 "으로"를 빼고, 번호 바로 뒤에 한글(일, 회, 주 등)이 오면 기간·횟수로 보고
+# 주소로 보지 않는다("고열로 2일 전부터").
+_ADDRESS_FORM = re.compile(
+    r"(?:서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|충청|전북|전남|전라"
+    r"|경북|경남|경상|제주)[가-힣]*\s*[가-힣]+(?:시|군|구)"
+    r"|[가-힣]+(?<!으)(?:로|길)\s?\d+(?:-\d+)?(?![\d가-힣])"
 )
 # 주민등록번호(뒷자리 마스킹 포함), 휴대전화, 하이픈 있는 유선 번호. 앞뒤가 숫자면 고르지 않는다.
 _PERSONAL_NUMBER = re.compile(
@@ -72,11 +87,19 @@ _PERSONAL_NUMBER = re.compile(
 
 
 def is_personal_info_line(line: str) -> bool:
-    """개인정보 라벨로 시작하거나 주민등록번호·전화번호 형식이 든 줄이면 True다.
+    """개인정보 줄이면 True다.
 
-    검사값·처방 줄과 성별·나이만 있는 줄은 남긴다. 줄 중간에 나오는 라벨은 보지 않는다.
+    성명·생년월일 같은 라벨로 시작하는 줄, 숫자가 있는 연락처 라벨 줄, 주소 형태가 있는
+    "주소" 라벨 줄, 주민등록번호·전화번호 형식이 든 줄을 고른다.
+    검사값·처방 줄, 성별·나이만 있는 줄, 주호소("주소: 흉통")와 "전화 상담" 안내는 남긴다.
+    줄 중간에 나오는 라벨은 보지 않는다.
     """
-    return bool(_PERSONAL_LABEL.match(line) or _PERSONAL_NUMBER.search(line))
+    return bool(
+        _PERSONAL_LABEL.match(line)
+        or (_CONTACT_LABEL.match(line) and any(char.isdigit() for char in line))
+        or (_ADDRESS_LABEL.match(line) and _ADDRESS_FORM.search(line))
+        or _PERSONAL_NUMBER.search(line)
+    )
 
 
 @lru_cache

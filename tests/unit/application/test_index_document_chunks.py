@@ -205,7 +205,7 @@ def test_personal_info_lines_are_not_embedded() -> None:
 
 def test_only_personal_info_lines_skip_as_no_chunks() -> None:
     """개인정보 줄만 있으면 조각이 없어 기존 색인을 지우지 않고 NO_CHUNKS로 건너뛴다."""
-    repository = FakeRepository(make_target("성명: 홍길동\n주소: 서울시 어딘가 1"))
+    repository = FakeRepository(make_target("성명: 홍길동\n주소: 서울시 강남구 어딘가 1"))
     embedder = FakeEmbedder()
 
     outcome = run(repository, embedder)
