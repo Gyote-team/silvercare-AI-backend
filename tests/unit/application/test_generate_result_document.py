@@ -271,33 +271,6 @@ def test_uncited_summary_is_not_exposed():
     assert "HbA1c 6.5 %" in result.answer
 
 
-def test_detail_response_uses_detail_prompt_version():
-    """상세 문서 결과는 일반 답변과 구분되는 프롬프트 버전을 기록한다."""
-    allowed = uuid4()
-    request = request_with_evidence(allowed).model_copy(update={"detailed_document": True})
-    answer = GeneratedAnswer.model_validate(
-        {
-            "title": "상세 설명",
-            "summary": "HbA1c 결과 요약",
-            "summary_citation_ids": [allowed],
-            "sections": [
-                {
-                    "heading": "쉬운 설명",
-                    "items": [
-                        {
-                            "kind": "PARAGRAPH",
-                            "text": "HbA1c 6.5 %가 적혀 있습니다.",
-                            "citation_ids": [allowed],
-                        }
-                    ],
-                }
-            ],
-        }
-    )
-
-    result = GenerateResultDocumentUseCase(FakeLlm(answer)).generate(request)
-
-    assert result.prompt_version == "chat-grounded-v2-detail"
 
 
 def test_retrieved_chunk_is_merged_before_structured_evidence_and_returned_as_source():

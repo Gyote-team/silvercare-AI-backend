@@ -83,7 +83,7 @@ class GenerateResultDocumentUseCase:
 
         try:
             generated = self._llm_client.generate_grounded_answer(
-                self._prompts.system(question_type, enriched.detailed_document),
+                self._prompts.system(question_type),
                 self._prompts.user(enriched, question_type),
             )
             answer, usage = generated if isinstance(generated, tuple) else (generated, None)
@@ -229,7 +229,6 @@ class GenerateResultDocumentUseCase:
         used_sources = [
             source for source in request.evidence if source.citation_id in used_citations
         ]
-        prompt_version = f"{PROMPT_VERSION}-detail" if request.detailed_document else PROMPT_VERSION
         return GenerateResultDocumentResponse(
             request_id=request.request_id,
             question_type=question_type,
@@ -239,7 +238,7 @@ class GenerateResultDocumentUseCase:
             answer=render_markdown(
                 answer.title, answer.summary if summary_is_valid else "", sections
             ),
-            prompt_version=prompt_version,
+            prompt_version=PROMPT_VERSION,
             sentences=sentences,
             sources=used_sources,
             usage=usage,
