@@ -1,5 +1,8 @@
+import json
 from uuid import uuid4
 
+from app.application.ports.chunk_evidence_retriever import RetrievedChunk
+from app.application.ports.text_embedder import EmbeddingError, EmbeddingErrorCode
 from app.application.use_cases.generate_result_document import GenerateResultDocumentUseCase
 from app.contracts.ai_result_document import (
     AnswerSentence,
@@ -33,7 +36,57 @@ class FailingLlm:
 
 class UsageLlm(FakeLlm):
     def generate_grounded_answer(self, system_prompt: str, user_prompt: str):
-        return self.answer, LlmUsage(model="test", input_tokens=10, output_tokens=5, total_tokens=15)
+        return self.answer, LlmUsage(
+            model="test", input_tokens=10, output_tokens=5, total_tokens=15
+        )
+
+
+class PromptAwareLlm:
+    def __init__(self) -> None:
+        self.evidence = []
+
+    def generate_grounded_answer(self, system_prompt: str, user_prompt: str):
+        self.evidence = json.loads(user_prompt)["evidence"]
+        citation_id = self.evidence[0]["citation_id"]
+        return GeneratedAnswer.model_validate(
+            {
+                "title": "검색 답변",
+                "summary": "검색된 원문입니다.",
+                "summary_citation_ids": [citation_id],
+                "sections": [
+                    {
+                        "heading": "근거",
+                        "items": [
+                            {
+                                "kind": "PARAGRAPH",
+                                "text": "검색된 원문입니다.",
+                                "citation_ids": [citation_id],
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+
+class FakeEmbedder:
+    model_name = "test-embedding"
+
+    def __init__(self, error=None) -> None:
+        self.error = error
+
+    def embed(self, texts):
+        if self.error:
+            raise self.error
+        return [[0.1] * 768 for _ in texts]
+
+
+class FakeRetriever:
+    def __init__(self, chunks) -> None:
+        self.chunks = chunks
+
+    def retrieve(self, **kwargs):
+        return self.chunks
 
 
 def request_with_evidence(citation_id):
@@ -245,3 +298,49 @@ def test_detail_response_uses_detail_prompt_version():
     result = GenerateResultDocumentUseCase(FakeLlm(answer)).generate(request)
 
     assert result.prompt_version == "chat-grounded-v2-detail"
+
+
+def test_retrieved_chunk_is_merged_before_structured_evidence_and_returned_as_source():
+    request = request_with_evidence(uuid4())
+    chunk_id = uuid4()
+    llm = PromptAwareLlm()
+    service = GenerateResultDocumentUseCase(
+        llm,
+        chunk_retriever=FakeRetriever(
+            [
+                RetrievedChunk(
+                    chunk_id=chunk_id,
+                    document_id=request.allowed_document_ids[0],
+                    page_no=2,
+                    content="검색된 문서 원문",
+                    similarity=0.91,
+                )
+            ]
+        ),
+        text_embedder=FakeEmbedder(),
+        retrieval_enabled=True,
+    )
+
+    result = service.generate(request)
+
+    assert llm.evidence[0]["source_type"] == "DOCUMENT_CHUNK"
+    assert llm.evidence[0]["source_id"] == str(chunk_id)
+    assert result.sources[0].source_id == chunk_id
+    assert result.sources[0].document_id == request.allowed_document_ids[0]
+
+
+def test_embedding_timeout_is_failed_and_retryable_not_insufficient():
+    request = request_with_evidence(uuid4())
+    service = GenerateResultDocumentUseCase(
+        PromptAwareLlm(),
+        chunk_retriever=FakeRetriever([]),
+        text_embedder=FakeEmbedder(EmbeddingError(EmbeddingErrorCode.TIMEOUT)),
+        retrieval_enabled=True,
+    )
+
+    result = service.generate(request)
+
+    assert result.failed is True
+    assert result.error_code == "EMBEDDING_TIMEOUT"
+    assert result.retryable is True
+    assert result.result_status is None

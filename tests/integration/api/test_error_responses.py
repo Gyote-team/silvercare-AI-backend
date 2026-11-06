@@ -16,6 +16,8 @@ def _settings() -> Settings:
         llm_api_key=SecretStr("test-key"),
         llm_base_url="https://example.test/openai/",
         llm_model="test-model",
+        chat_retrieval_enabled=False,
+        document_analysis_resume_on_startup=False,
     )
 
 
