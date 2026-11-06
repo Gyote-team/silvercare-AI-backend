@@ -218,4 +218,5 @@ class GenerateResultDocumentResponse(BaseModel):
     content_format: str = "MARKDOWN"
     prompt_version: str = "chat-grounded-v2"
     sentences: list[AnswerSentence] = Field(default_factory=list)
+    sources: list[EvidenceSource] = Field(default_factory=list)
     usage: LlmUsage | None = None

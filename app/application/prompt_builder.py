@@ -18,6 +18,8 @@ title, summary, summary_citation_ids, sections의 구조화 JSON을 반환하세
 요약에도 실제 근거 ID를 넣으세요. 각 section은 heading과 items를 가지며,
 각 item은 kind(PARAGRAPH|BULLET|CALLOUT), text, citation_ids를 가집니다.
 모든 item은 실제 제공된 citation_id를 하나 이상 인용해야 합니다.
+DOCUMENT_CHUNK는 질문과 의미가 가까운 원문 문맥이고, EXTRACTED_ITEM은 검증된 구조화 값입니다.
+수치·단위·참고 범위는 EXTRACTED_ITEM을 우선하고 DOCUMENT_CHUNK의 문맥과 모순되면 추측하지 마세요.
 """
         detail = (
             """
