@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     embedding_max_retries: int = Field(default=2, ge=0, le=5)
     embedding_retry_backoff_seconds: float = Field(default=1.0, ge=0)
     embedding_batch_size: int = Field(default=100, gt=0, le=2048)
+    chat_retrieval_enabled: bool = True
+    chat_retrieval_top_k: int = Field(default=8, gt=0, le=40)
+    chat_retrieval_min_similarity: float = Field(default=0.30, ge=-1, le=1)
 
     @model_validator(mode="after")
     def validate_stt_lease(self):
