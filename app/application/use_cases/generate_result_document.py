@@ -20,6 +20,8 @@ from app.domain.ai_result.question_classifier import QuestionClassifier
 from app.domain.ai_result.safety_check import SafetyCheck
 from app.infrastructure.providers.llm.openai_compatible_client import LlmClient
 
+MAX_SOURCE_TEXT_LENGTH = 6000
+
 
 class GenerateResultDocumentUseCase:
     """LLM 호출 전후에 안전성과 citation 무결성을 강제한다."""
@@ -151,17 +153,25 @@ class GenerateResultDocumentUseCase:
                 source_id=chunk.chunk_id,
                 document_id=chunk.document_id,
                 page_no=chunk.page_no,
-                source_text=chunk.content,
+                source_text=chunk.content[:MAX_SOURCE_TEXT_LENGTH],
             )
             for chunk in chunks
         ]
         merged: list[EvidenceSource] = []
-        seen: set[tuple[object, object, str]] = set()
-        for source in [*retrieved, *structured]:
+        positions: dict[tuple[object, object, str], int] = {}
+        for source in retrieved:
             key = (source.document_id, source.page_no, source.source_text.strip())
-            if key not in seen:
-                seen.add(key)
+            if key not in positions:
+                positions[key] = len(merged)
                 merged.append(source)
+        for source in structured:
+            key = (source.document_id, source.page_no, source.source_text.strip())
+            position = positions.get(key)
+            if position is None:
+                positions[key] = len(merged)
+                merged.append(source)
+            else:
+                merged[position] = source
         return request.model_copy(update={"evidence": merged}), None
 
     @staticmethod

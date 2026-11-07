@@ -302,6 +302,74 @@ def test_retrieved_chunk_is_merged_before_structured_evidence_and_returned_as_so
     assert result.sources[0].document_id == request.allowed_document_ids[0]
 
 
+def test_retrieved_chunk_source_text_is_limited_to_contract_length():
+    request = request_with_evidence(uuid4()).model_copy(update={"evidence": []})
+    llm = PromptAwareLlm()
+    service = GenerateResultDocumentUseCase(
+        llm,
+        chunk_retriever=FakeRetriever(
+            [
+                RetrievedChunk(
+                    chunk_id=uuid4(),
+                    document_id=request.allowed_document_ids[0],
+                    page_no=1,
+                    content="A" + (" " * 7000) + "B",
+                    similarity=0.91,
+                )
+            ]
+        ),
+        text_embedder=FakeEmbedder(),
+        retrieval_enabled=True,
+    )
+
+    result = service.generate(request)
+
+    assert result.failed is False
+    assert len(llm.evidence[0]["source_text"]) == 6000
+
+
+def test_structured_evidence_replaces_duplicate_chunk_and_preserves_numeric_metadata():
+    request = request_with_evidence(uuid4())
+    document_id = request.allowed_document_ids[0]
+    source_text = "HbA1c 검사 결과"
+    structured = EvidenceSource(
+        citation_id=uuid4(),
+        source_type="EXTRACTED_ITEM",
+        document_id=document_id,
+        page_no=2,
+        source_text=source_text,
+        value="6.5",
+        unit="%",
+        reference_range="4.0-5.6",
+    )
+    request = request.model_copy(update={"evidence": [structured]})
+    llm = PromptAwareLlm()
+    service = GenerateResultDocumentUseCase(
+        llm,
+        chunk_retriever=FakeRetriever(
+            [
+                RetrievedChunk(
+                    chunk_id=uuid4(),
+                    document_id=document_id,
+                    page_no=2,
+                    content=source_text,
+                    similarity=0.91,
+                )
+            ]
+        ),
+        text_embedder=FakeEmbedder(),
+        retrieval_enabled=True,
+    )
+
+    service.generate(request)
+
+    assert len(llm.evidence) == 1
+    assert llm.evidence[0]["source_type"] == "EXTRACTED_ITEM"
+    assert llm.evidence[0]["value"] == "6.5"
+    assert llm.evidence[0]["unit"] == "%"
+    assert llm.evidence[0]["reference_range"] == "4.0-5.6"
+
+
 def test_embedding_timeout_is_failed_and_retryable_not_insufficient():
     request = request_with_evidence(uuid4())
     service = GenerateResultDocumentUseCase(
