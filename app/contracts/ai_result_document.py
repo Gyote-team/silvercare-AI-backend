@@ -71,7 +71,6 @@ class GenerateResultDocumentRequest(BaseModel):
     allowed_document_ids: list[UUID] = Field(default_factory=list)
     allowed_health_record_ids: list[UUID] = Field(default_factory=list)
     evidence: list[EvidenceSource] = Field(default_factory=list, max_length=40)
-    detailed_document: bool = False
 
     @field_validator("question")
     @classmethod
@@ -218,4 +217,5 @@ class GenerateResultDocumentResponse(BaseModel):
     content_format: str = "MARKDOWN"
     prompt_version: str = "chat-grounded-v2"
     sentences: list[AnswerSentence] = Field(default_factory=list)
+    sources: list[EvidenceSource] = Field(default_factory=list)
     usage: LlmUsage | None = None

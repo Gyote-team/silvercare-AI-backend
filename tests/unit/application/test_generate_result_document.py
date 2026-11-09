@@ -1,5 +1,8 @@
+import json
 from uuid import uuid4
 
+from app.application.ports.chunk_evidence_retriever import RetrievedChunk
+from app.application.ports.text_embedder import EmbeddingError, EmbeddingErrorCode
 from app.application.use_cases.generate_result_document import GenerateResultDocumentUseCase
 from app.contracts.ai_result_document import (
     AnswerSentence,
@@ -33,7 +36,57 @@ class FailingLlm:
 
 class UsageLlm(FakeLlm):
     def generate_grounded_answer(self, system_prompt: str, user_prompt: str):
-        return self.answer, LlmUsage(model="test", input_tokens=10, output_tokens=5, total_tokens=15)
+        return self.answer, LlmUsage(
+            model="test", input_tokens=10, output_tokens=5, total_tokens=15
+        )
+
+
+class PromptAwareLlm:
+    def __init__(self) -> None:
+        self.evidence = []
+
+    def generate_grounded_answer(self, system_prompt: str, user_prompt: str):
+        self.evidence = json.loads(user_prompt)["evidence"]
+        citation_id = self.evidence[0]["citation_id"]
+        return GeneratedAnswer.model_validate(
+            {
+                "title": "검색 답변",
+                "summary": "검색된 원문입니다.",
+                "summary_citation_ids": [citation_id],
+                "sections": [
+                    {
+                        "heading": "근거",
+                        "items": [
+                            {
+                                "kind": "PARAGRAPH",
+                                "text": "검색된 원문입니다.",
+                                "citation_ids": [citation_id],
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+
+class FakeEmbedder:
+    model_name = "test-embedding"
+
+    def __init__(self, error=None) -> None:
+        self.error = error
+
+    def embed(self, texts):
+        if self.error:
+            raise self.error
+        return [[0.1] * 768 for _ in texts]
+
+
+class FakeRetriever:
+    def __init__(self, chunks) -> None:
+        self.chunks = chunks
+
+    def retrieve(self, **kwargs):
+        return self.chunks
 
 
 def request_with_evidence(citation_id):
@@ -218,30 +271,117 @@ def test_uncited_summary_is_not_exposed():
     assert "HbA1c 6.5 %" in result.answer
 
 
-def test_detail_response_uses_detail_prompt_version():
-    """상세 문서 결과는 일반 답변과 구분되는 프롬프트 버전을 기록한다."""
-    allowed = uuid4()
-    request = request_with_evidence(allowed).model_copy(update={"detailed_document": True})
-    answer = GeneratedAnswer.model_validate(
-        {
-            "title": "상세 설명",
-            "summary": "HbA1c 결과 요약",
-            "summary_citation_ids": [allowed],
-            "sections": [
-                {
-                    "heading": "쉬운 설명",
-                    "items": [
-                        {
-                            "kind": "PARAGRAPH",
-                            "text": "HbA1c 6.5 %가 적혀 있습니다.",
-                            "citation_ids": [allowed],
-                        }
-                    ],
-                }
-            ],
-        }
+
+
+def test_retrieved_chunk_is_merged_before_structured_evidence_and_returned_as_source():
+    request = request_with_evidence(uuid4())
+    chunk_id = uuid4()
+    llm = PromptAwareLlm()
+    service = GenerateResultDocumentUseCase(
+        llm,
+        chunk_retriever=FakeRetriever(
+            [
+                RetrievedChunk(
+                    chunk_id=chunk_id,
+                    document_id=request.allowed_document_ids[0],
+                    page_no=2,
+                    content="검색된 문서 원문",
+                    similarity=0.91,
+                )
+            ]
+        ),
+        text_embedder=FakeEmbedder(),
+        retrieval_enabled=True,
     )
 
-    result = GenerateResultDocumentUseCase(FakeLlm(answer)).generate(request)
+    result = service.generate(request)
 
-    assert result.prompt_version == "chat-grounded-v2-detail"
+    assert llm.evidence[0]["source_type"] == "DOCUMENT_CHUNK"
+    assert llm.evidence[0]["source_id"] == str(chunk_id)
+    assert result.sources[0].source_id == chunk_id
+    assert result.sources[0].document_id == request.allowed_document_ids[0]
+
+
+def test_retrieved_chunk_source_text_is_limited_to_contract_length():
+    request = request_with_evidence(uuid4()).model_copy(update={"evidence": []})
+    llm = PromptAwareLlm()
+    service = GenerateResultDocumentUseCase(
+        llm,
+        chunk_retriever=FakeRetriever(
+            [
+                RetrievedChunk(
+                    chunk_id=uuid4(),
+                    document_id=request.allowed_document_ids[0],
+                    page_no=1,
+                    content="A" + (" " * 7000) + "B",
+                    similarity=0.91,
+                )
+            ]
+        ),
+        text_embedder=FakeEmbedder(),
+        retrieval_enabled=True,
+    )
+
+    result = service.generate(request)
+
+    assert result.failed is False
+    assert len(llm.evidence[0]["source_text"]) == 6000
+
+
+def test_structured_evidence_replaces_duplicate_chunk_and_preserves_numeric_metadata():
+    request = request_with_evidence(uuid4())
+    document_id = request.allowed_document_ids[0]
+    source_text = "HbA1c 검사 결과"
+    structured = EvidenceSource(
+        citation_id=uuid4(),
+        source_type="EXTRACTED_ITEM",
+        document_id=document_id,
+        page_no=2,
+        source_text=source_text,
+        value="6.5",
+        unit="%",
+        reference_range="4.0-5.6",
+    )
+    request = request.model_copy(update={"evidence": [structured]})
+    llm = PromptAwareLlm()
+    service = GenerateResultDocumentUseCase(
+        llm,
+        chunk_retriever=FakeRetriever(
+            [
+                RetrievedChunk(
+                    chunk_id=uuid4(),
+                    document_id=document_id,
+                    page_no=2,
+                    content=source_text,
+                    similarity=0.91,
+                )
+            ]
+        ),
+        text_embedder=FakeEmbedder(),
+        retrieval_enabled=True,
+    )
+
+    service.generate(request)
+
+    assert len(llm.evidence) == 1
+    assert llm.evidence[0]["source_type"] == "EXTRACTED_ITEM"
+    assert llm.evidence[0]["value"] == "6.5"
+    assert llm.evidence[0]["unit"] == "%"
+    assert llm.evidence[0]["reference_range"] == "4.0-5.6"
+
+
+def test_embedding_timeout_is_failed_and_retryable_not_insufficient():
+    request = request_with_evidence(uuid4())
+    service = GenerateResultDocumentUseCase(
+        PromptAwareLlm(),
+        chunk_retriever=FakeRetriever([]),
+        text_embedder=FakeEmbedder(EmbeddingError(EmbeddingErrorCode.TIMEOUT)),
+        retrieval_enabled=True,
+    )
+
+    result = service.generate(request)
+
+    assert result.failed is True
+    assert result.error_code == "EMBEDDING_TIMEOUT"
+    assert result.retryable is True
+    assert result.result_status is None
